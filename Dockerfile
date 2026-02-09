@@ -49,4 +49,9 @@ RUN rpm-ostree install \
 
 RUN echo "bcachefs" > /etc/modules-load.d/bcachefs.conf
 
+COPY rpm-ostreed-oci-update.service /etc/systemd/system/rpm-ostreed-oci-update.service
+COPY rpm-ostreed-oci-update.timer /etc/systemd/system/rpm-ostreed-oci-update.timer
+
+RUN ln -s /etc/systemd/system/rpm-ostreed-oci-update.timer /etc/systemd/system/timers.target.wants/rpm-ostreed-oci-update.timer
+
 RUN ostree container commit
