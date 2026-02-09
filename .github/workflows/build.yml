@@ -1,23 +1,35 @@
 name: Build FCOS bcachefs images
 
 on:
+  push:
+    branches:
+      - main
   schedule:
-    - cron: "0 */6 * * *"
+    # daily rebuild to catch new FCOS base or new bcachefs tag
+    - cron: "0 6 * * *"
   workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     strategy:
+      fail-fast: false
       matrix:
-        stream: [stable, testing]
+        fcos_stream:
+          - stable
+          - testing
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Resolve bcachefs-tools tag (v1.36.1*)
-        id: bcache
+      - name: Resolve latest bcachefs v1.36.1 tag
+        id: bcachefs
         run: |
           TAG=$(git ls-remote --tags https://evilpiepirate.org/git/bcachefs-tools.git \
             | awk -F/ '{print $NF}' \
@@ -25,22 +37,28 @@ jobs:
             | grep -v '\^{}' \
             | sort -V \
             | tail -n1)
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-      - name: Login to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | \
-             podman login ghcr.io -u ${{ github.actor }} --password-stdin
+          if [ -z "$TAG" ]; then
+            echo "No matching bcachefs tag found, aborting"
+            exit 1
+          fi
 
-      - name: Build image
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
         run: |
-          podman build \
-            --build-arg BCACHE_TAG=${{ steps.bcache.outputs.tag }} \
-            --build-arg FCOS_STREAM=${{ matrix.stream }} \
-            -t ghcr.io/${{ github.repository }}/fcos-bcachefs:${{ matrix.stream }} \
-            -t ghcr.io/${{ github.repository }}/fcos-bcachefs:${{ matrix.stream }}-${{ steps.bcache.outputs.tag }} \
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg FCOS_STREAM=${{ matrix.fcos_stream }} \
+            --build-arg BCACHE_TAG=${{ steps.bcachefs.outputs.tag }} \
+            -t ghcr.io/${{ github.repository }}:${{ matrix.fcos_stream }} \
+            -t ghcr.io/${{ github.repository }}:${{ steps.bcachefs.outputs.tag }}-${{ matrix.fcos_stream }} \
             .
 
-      - name: Push image
+      - name: Push Docker image
         run: |
-          podman push ghcr.io/${{ github.repository }}/fcos-bcachefs:${{ matrix.stream }}
-          podman push ghcr.io/${{ github.repository }}/fcos-bcachefs:${{ matrix.stream }}-${{ steps.bcache.outputs.tag }}
+          docker push ghcr.io/$
