@@ -36,7 +36,7 @@ jobs:
           LATEST=$(curl -s $URL | jq -r ".architectures.${ARCH}.artifacts.metal.formats.iso.disk.location")
           echo "fcos_build=$LATEST" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve latest bcachefs v1.36.1 tag
+      - name: Resolve latest bcachefs tag
         id: bcachefs
         run: |
           TAG=$(git ls-remote --tags https://evilpiepirate.org/git/bcachefs-tools.git \
