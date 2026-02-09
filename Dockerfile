@@ -1,7 +1,6 @@
 FROM fedora:43 AS builder
 
 ARG BCACHE_TAG
-ARG FCOS_STREAM=stable
 
 RUN dnf install -y \
     rpm-build \
@@ -34,7 +33,7 @@ RUN git clone --depth 1 --branch ${BCACHE_TAG} \
     cd bcachefs-tools && \
     make rpm
 
-
+ARG FCOS_STREAM=stable
 FROM quay.io/fedora/fedora-coreos:${FCOS_STREAM}
 
 COPY --from=builder /root/rpmbuild/RPMS/x86_64/bcachefs-tools-*.rpm /tmp/
