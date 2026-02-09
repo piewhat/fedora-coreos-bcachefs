@@ -32,17 +32,11 @@ jobs:
         id: fcos
         run: |
           STREAM=${{ matrix.fcos_stream }}
-          # Download JSON metadata for the stream
+          ARCH=x86_64
           URL="https://builds.coreos.fedoraproject.org/streams/${STREAM}.json"
-          LATEST=$(curl -s $URL | jq -r '.architectures.x86_64.artifacts.x86_64-usr.disk.location')
-          
-          if [ -z "$LATEST" ]; then
-            echo "Could not fetch latest FCOS build, aborting"
-            exit 1
-          fi
-
+          LATEST=$(curl -s $URL | jq -r ".architectures.${ARCH}.artifacts.metal.release")
           echo "fcos_build=$LATEST" >> "$GITHUB_OUTPUT"
-
+        
       - name: Resolve latest bcachefs v1.36.1 tag
         id: bcachefs
         run: |
