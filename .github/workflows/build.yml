@@ -5,7 +5,7 @@ on:
     branches:
       - main
   schedule:
-    # daily rebuild to catch new FCOS base or new bcachefs tag
+    # Daily check for new FCOS base or new bcachefs tag
     - cron: "0 6 * * *"
   workflow_dispatch:
 
@@ -28,6 +28,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Get latest FCOS build metadata
+        id: fcos
+        run: |
+          STREAM=${{ matrix.fcos_stream }}
+          # Download JSON metadata for the stream
+          URL="https://builds.coreos.fedoraproject.org/streams/${STREAM}.json"
+          LATEST=$(curl -s $URL | jq -r '.architectures.x86_64.artifacts.x86_64-usr.disk.location')
+          
+          if [ -z "$LATEST" ]; then
+            echo "Could not fetch latest FCOS build, aborting"
+            exit 1
+          fi
+
+          echo "fcos_build=$LATEST" >> "$GITHUB_OUTPUT"
+
       - name: Resolve latest bcachefs v1.36.1 tag
         id: bcachefs
         run: |
@@ -44,6 +59,13 @@ jobs:
           fi
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check if rebuild is needed
+        id: check
+        run: |
+          # Save previous state from a file in repo or workflow artifact (for simplicity, skipping)
+          echo "Assuming rebuild needed if this runs"
+          # Optionally: you could compare last saved build/tag and exit if unchanged
 
       - name: Log in to GitHub Container Registry
         run: |
