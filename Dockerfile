@@ -40,7 +40,7 @@ COPY --from=builder /root/rpmbuild/RPMS/x86_64/bcachefs-tools-*.rpm /tmp/
 COPY --from=builder /root/rpmbuild/RPMS/noarch/dkms-bcachefs-*.rpm /tmp/
 
 RUN TARGET_VERSION=$(rpm -q kernel --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}\n' | head -n 1) && \
-    dnf install -y "kernel-devel-${TARGET_VERSION}" dkms
+    rpm-ostree install -y "kernel-devel-${TARGET_VERSION}" dkms
 
 RUN rpm-ostree install \
       /tmp/bcachefs-tools-*.rpm \
