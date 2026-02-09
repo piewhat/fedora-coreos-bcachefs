@@ -1,4 +1,4 @@
-ARG FCOS_STREAM
+ARG FCOS_STREAM=stable
 
 FROM fedora:43 AS builder
 ARG BCACHE_TAG
