@@ -3,9 +3,7 @@ Description=Trigger rpm-ostree OCI upgrade daily
 ConditionPathExists=/run/ostree-booted
 
 [Timer]
-# Run 1h after boot and every 24h thereafter
-OnBootSec=1h
-OnUnitInactiveSec=1d
+OnCalendar=*-*-* 04:00:00
 Persistent=true
 
 [Install]
