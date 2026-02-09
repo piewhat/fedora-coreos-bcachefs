@@ -61,6 +61,12 @@ jobs:
       - name: Check if rebuild is needed
         id: check
         run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
+             [ "${{ inputs.force }}" = "true" ]; then
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          
           FILE=".last_build_${{ matrix.fcos_stream }}"
           BUILD_NEEDED=false
 
