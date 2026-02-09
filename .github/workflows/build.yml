@@ -5,12 +5,11 @@ on:
     branches:
       - main
   schedule:
-    # Daily check for new FCOS base or new bcachefs tag
     - cron: "0 6 * * *"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -34,9 +33,9 @@ jobs:
           STREAM=${{ matrix.fcos_stream }}
           ARCH=x86_64
           URL="https://builds.coreos.fedoraproject.org/streams/${STREAM}.json"
-          LATEST=$(curl -s $URL | jq -r ".architectures.${ARCH}.artifacts.metal.release")
+          LATEST=$(curl -s $URL | jq -r ".architectures.${ARCH}.artifacts.metal.formats.disk.location")
           echo "fcos_build=$LATEST" >> "$GITHUB_OUTPUT"
-        
+
       - name: Resolve latest bcachefs v1.36.1 tag
         id: bcachefs
         run: |
@@ -57,16 +56,30 @@ jobs:
       - name: Check if rebuild is needed
         id: check
         run: |
-          # Save previous state from a file in repo or workflow artifact (for simplicity, skipping)
-          echo "Assuming rebuild needed if this runs"
-          # Optionally: you could compare last saved build/tag and exit if unchanged
+          FILE=".last_build_${{ matrix.fcos_stream }}"
+          BUILD_NEEDED=false
+
+          if [ ! -f "$FILE" ]; then
+            BUILD_NEEDED=true
+          else
+            OLD_TAG=$(cut -d',' -f1 "$FILE")
+            OLD_FCOS=$(cut -d',' -f2 "$FILE")
+            if [ "$OLD_TAG" != "${{ steps.bcachefs.outputs.tag }}" ] || \
+               [ "$OLD_FCOS" != "${{ steps.fcos.outputs.fcos_build }}" ]; then
+              BUILD_NEEDED=true
+            fi
+          fi
+
+          echo "build_needed=$BUILD_NEEDED" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GitHub Container Registry
+        if: ${{ steps.check.outputs.build_needed == 'true' }}
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       - name: Build Docker image
+        if: ${{ steps.check.outputs.build_needed == 'true' }}
         run: |
           docker build \
             --build-arg FCOS_STREAM=${{ matrix.fcos_stream }} \
@@ -76,6 +89,18 @@ jobs:
             .
 
       - name: Push Docker image
+        if: ${{ steps.check.outputs.build_needed == 'true' }}
         run: |
           docker push ghcr.io/${{ github.repository }}:${{ matrix.fcos_stream }}
           docker push ghcr.io/${{ github.repository }}:${{ steps.bcachefs.outputs.tag }}-${{ matrix.fcos_stream }}
+
+      - name: Save last build state
+        if: ${{ steps.check.outputs.build_needed == 'true' }}
+        run: |
+          FILE=".last_build_${{ matrix.fcos_stream }}"
+          echo "${{ steps.bcachefs.outputs.tag }},${{ steps.fcos.outputs.fcos_build }}" > "$FILE"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add "$FILE"
+          git commit -m "Update last build for ${{ matrix.fcos_stream }}" || echo "No changes to commit"
+          git push origin main || echo "Push failed, probably no changes"
