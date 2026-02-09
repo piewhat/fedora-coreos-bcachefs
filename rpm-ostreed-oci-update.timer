@@ -1,0 +1,10 @@
+[Unit]
+Description=Trigger rpm-ostree OCI upgrade daily
+ConditionPathExists=/run/ostree-booted
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
