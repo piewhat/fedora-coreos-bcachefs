@@ -49,11 +49,4 @@ RUN rpm-ostree install \
 
 RUN echo "bcachefs" > /etc/modules-load.d/bcachefs.conf
 
-RUN ostree --repo=/ostree/repo init --mode=bare && \
-    ostree --repo=/ostree/repo commit \
-      --branch=${FCOS_STREAM} \
-      --subject="FCOS + Bcachefs ${BCACHE_TAG}" \
-      --add-metadata-string=fedora-coreos.stream=${FCOS_STREAM} \
-      /usr
-
-
+RUN ostree container commit
