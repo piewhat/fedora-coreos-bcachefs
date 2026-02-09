@@ -33,7 +33,7 @@ jobs:
           STREAM=${{ matrix.fcos_stream }}
           ARCH=x86_64
           URL="https://builds.coreos.fedoraproject.org/streams/${STREAM}.json"
-          LATEST=$(curl -s $URL | jq -r ".architectures.${ARCH}.artifacts.metal.formats.disk.location")
+          LATEST=$(curl -s $URL | jq -r ".architectures.${ARCH}.artifacts.metal.formats.iso.disk.location")
           echo "fcos_build=$LATEST" >> "$GITHUB_OUTPUT"
 
       - name: Resolve latest bcachefs v1.36.1 tag
