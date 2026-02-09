@@ -1,0 +1,46 @@
+name: Build FCOS bcachefs images
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    strategy:
+      matrix:
+        stream: [stable, testing]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve bcachefs-tools tag (v1.36.1*)
+        id: bcache
+        run: |
+          TAG=$(git ls-remote --tags https://evilpiepirate.org/git/bcachefs-tools.git \
+            | awk -F/ '{print $NF}' \
+            | grep -E '^v1\.36\.1([.-].*)?$' \
+            | grep -v '\^{}' \
+            | sort -V \
+            | tail -n1)
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | \
+             podman login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build image
+        run: |
+          podman build \
+            --build-arg BCACHE_TAG=${{ steps.bcache.outputs.tag }} \
+            --build-arg FCOS_STREAM=${{ matrix.stream }} \
+            -t ghcr.io/${{ github.repository }}/fcos-bcachefs:${{ matrix.stream }} \
+            -t ghcr.io/${{ github.repository }}/fcos-bcachefs:${{ matrix.stream }}-${{ steps.bcache.outputs.tag }} \
+            .
+
+      - name: Push image
+        run: |
+          podman push ghcr.io/${{ github.repository }}/fcos-bcachefs:${{ matrix.stream }}
+          podman push ghcr.io/${{ github.repository }}/fcos-bcachefs:${{ matrix.stream }}-${{ steps.bcache.outputs.tag }}
