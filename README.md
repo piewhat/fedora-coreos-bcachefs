@@ -1,6 +1,6 @@
 # Fedora CoreOS with Bcachefs
 
-This repository provides Fedora CoreOS images with Bcachefs built in.  
+This repository provides Fedora CoreOS images with the Bcachefs DKMS module.  
 
 Images are updated automatically when either:
 
