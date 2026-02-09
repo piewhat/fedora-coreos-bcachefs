@@ -61,4 +61,5 @@ jobs:
 
       - name: Push Docker image
         run: |
-          docker push ghcr.io/$
+          docker push ghcr.io/${{ github.repository }}:${{ matrix.fcos_stream }}
+          docker push ghcr.io/${{ github.repository }}:${{ steps.bcachefs.outputs.tag }}-${{ matrix.fcos_stream }}
