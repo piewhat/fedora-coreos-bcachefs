@@ -7,6 +7,8 @@ Images are updated automatically when either:
 - A new bcachefs-tools tag is created
 - A new Fedora CoreOS build is released
 
+Unfortunately zincati does not work with ostree-unverified-registry atm, I'm looking into a way to make it work if possible. 
+
 ---
 
 ## Available Images
