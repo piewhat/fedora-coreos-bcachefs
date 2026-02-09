@@ -1,0 +1,10 @@
+[Unit]
+Description=rpm-ostree OCI registry upgrade and reboot
+ConditionPathExists=/run/ostree-booted
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# --reboot only triggers if a new image version is successfully pulled
+ExecStart=/usr/bin/rpm-ostree upgrade --reboot
