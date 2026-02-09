@@ -1,7 +1,7 @@
-FROM fedora:43 AS builder
-
-ARG BCACHE_TAG
 ARG FCOS_STREAM
+
+FROM fedora:43 AS builder
+ARG BCACHE_TAG
 
 RUN dnf install -y \
     rpm-build \
