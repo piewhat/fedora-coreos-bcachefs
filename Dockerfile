@@ -54,4 +54,6 @@ COPY rpm-ostreed-oci-update.timer /etc/systemd/system/rpm-ostreed-oci-update.tim
 
 RUN ln -s /etc/systemd/system/rpm-ostreed-oci-update.timer /etc/systemd/system/timers.target.wants/rpm-ostreed-oci-update.timer
 
+RUN systemctl disable dkms.service
+
 RUN ostree container commit
