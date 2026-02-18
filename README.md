@@ -7,7 +7,7 @@ Images are updated automatically when either:
 - A new bcachefs-tools tag is created
 - A new Fedora CoreOS build is released
 
-Zincati doesn’t currently support ostree-unverified-registry images, so this image includes a systemd service and timer to handle automatic updates. You can modify the timer to fit your needs.
+Zincati doesn’t currently support ostree-unverified-registry images, so this image includes a systemd service and timer to handle automatic updates. You can modify the timer to fit your needs using `systemctl edit rpm-ostreed-oci-update.timer` this should persist across updates.
 
 ---
 
