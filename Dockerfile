@@ -47,6 +47,8 @@ RUN rpm-ostree install \
       /tmp/dkms-bcachefs-*.rpm && \
     rm -f /tmp/*.rpm
 
+RUN rpm-ostree override remove nfs-utils --install nfs-utils-coreos
+
 RUN echo "bcachefs" > /etc/modules-load.d/bcachefs.conf
 
 COPY rpm-ostreed-oci-update.service /etc/systemd/system/rpm-ostreed-oci-update.service
