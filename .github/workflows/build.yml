@@ -39,6 +39,8 @@ jobs:
           ARCH=x86_64
           URL="https://builds.coreos.fedoraproject.org/streams/${STREAM}.json"
           LATEST=$(curl -s $URL | jq -r ".architectures.${ARCH}.artifacts.metal.formats.iso.disk.location")
+          VERSION=$(curl -s "$URL" | jq -r ".architectures.${ARCH}.artifacts.metal.release")
+          echo "fcos_version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "fcos_build=$LATEST" >> "$GITHUB_OUTPUT"
 
       - name: Resolve latest bcachefs tag
@@ -97,6 +99,7 @@ jobs:
             --build-arg BCACHE_TAG=${{ steps.bcachefs.outputs.tag }} \
             -t ghcr.io/${{ github.repository }}:${{ matrix.fcos_stream }} \
             -t ghcr.io/${{ github.repository }}:${{ steps.bcachefs.outputs.tag }}-${{ matrix.fcos_stream }} \
+            -t ghcr.io/${{ github.repository }}:${{ steps.bcachefs.outputs.tag }}-${{ steps.fcos.outputs.fcos_version }}-${{ matrix.fcos_stream }} \
             .
 
       - name: Push Docker image
@@ -104,7 +107,8 @@ jobs:
         run: |
           docker push ghcr.io/${{ github.repository }}:${{ matrix.fcos_stream }}
           docker push ghcr.io/${{ github.repository }}:${{ steps.bcachefs.outputs.tag }}-${{ matrix.fcos_stream }}
-
+          docker push ghcr.io/${{ github.repository }}:${{ steps.bcachefs.outputs.tag }}-${{ steps.fcos.outputs.fcos_version }}-${{ matrix.fcos_stream }}
+      
       - name: Save last build state
         if: ${{ steps.check.outputs.build_needed == 'true' }}
         run: |
