@@ -15,8 +15,6 @@ RUN mkdir -p \
     ${RUSTUP_HOME} \
     /build
 
-RUN dnf update -y kernel
-
 RUN dnf install -y \
     rpm-build \
     jq \
@@ -53,8 +51,6 @@ FROM quay.io/fedora/fedora-coreos:${FCOS_STREAM}
 
 COPY --from=builder /var/tmp/rpmbuild/RPMS/x86_64/bcachefs-tools-*.rpm /tmp/
 COPY --from=builder /var/tmp/rpmbuild/RPMS/noarch/dkms-bcachefs-*.rpm /tmp/
-
-RUN dnf update -y kernel
 
 RUN TARGET_VERSION=$(rpm -q kernel --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}\n' | head -n 1) && \
     rpm-ostree install -y "kernel-devel-${TARGET_VERSION}" dkms
