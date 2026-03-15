@@ -1,6 +1,6 @@
 ARG FCOS_STREAM=stable
 
-FROM fedora:43 AS builder
+FROM quay.io/fedora/fedora-coreos:${FCOS_STREAM} AS builder
 ARG BCACHE_TAG
 
 RUN dnf install -y \
