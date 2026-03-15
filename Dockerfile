@@ -15,6 +15,8 @@ RUN mkdir -p \
     ${RUSTUP_HOME} \
     /build
 
+RUN dnf update -y kernel
+
 RUN dnf install -y \
     rpm-build \
     jq \
