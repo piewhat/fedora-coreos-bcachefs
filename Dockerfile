@@ -49,7 +49,7 @@ RUN git clone --depth 1 --branch ${BCACHE_TAG} \
 
 FROM quay.io/fedora/fedora-coreos:${FCOS_STREAM}
 
-COPY --from=builder /var/tmp/rpmbuild/RPMS/x86_64/bcachefs-tools-*.rpm /tmp/
+COPY --from=builder /var/tmp/rpmbuild/RPMS/x86_64/bcachefs-tools-0*.rpm /tmp/
 COPY --from=builder /var/tmp/rpmbuild/RPMS/noarch/dkms-bcachefs-*.rpm /tmp/
 
 RUN TARGET_VERSION=$(rpm -q kernel --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}\n' | head -n 1) && \
