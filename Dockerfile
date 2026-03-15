@@ -3,6 +3,18 @@ ARG FCOS_STREAM=stable
 FROM quay.io/fedora/fedora-coreos:${FCOS_STREAM} AS builder
 ARG BCACHE_TAG
 
+ENV RPM_TOPDIR=/var/tmp/rpmbuild
+ENV CARGO_HOME=/var/tmp/cargo
+ENV RUSTUP_HOME=/var/tmp/rustup
+ENV HOME=/var/tmp
+ENV TMPDIR=/var/tmp
+
+RUN mkdir -p \
+    ${RPM_TOPDIR}/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS} \
+    ${CARGO_HOME} \
+    ${RUSTUP_HOME} \
+    /build
+
 RUN dnf install -y \
     rpm-build \
     jq \
@@ -32,12 +44,13 @@ WORKDIR /build
 RUN git clone --depth 1 --branch ${BCACHE_TAG} \
       https://evilpiepirate.org/git/bcachefs-tools.git && \
     cd bcachefs-tools && \
-    make rpm
-    
+    rpmbuild --define "_topdir ${RPM_TOPDIR}" -ta *.tar* || true && \
+    make rpm RPMBUILD="rpmbuild --define '_topdir ${RPM_TOPDIR}'"
+
 FROM quay.io/fedora/fedora-coreos:${FCOS_STREAM}
 
-COPY --from=builder /root/rpmbuild/RPMS/x86_64/bcachefs-tools-*.rpm /tmp/
-COPY --from=builder /root/rpmbuild/RPMS/noarch/dkms-bcachefs-*.rpm /tmp/
+COPY --from=builder /var/tmp/rpmbuild/RPMS/x86_64/bcachefs-tools-*.rpm /tmp/
+COPY --from=builder /var/tmp/rpmbuild/RPMS/noarch/dkms-bcachefs-*.rpm /tmp/
 
 RUN TARGET_VERSION=$(rpm -q kernel --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}\n' | head -n 1) && \
     rpm-ostree install -y "kernel-devel-${TARGET_VERSION}" dkms
