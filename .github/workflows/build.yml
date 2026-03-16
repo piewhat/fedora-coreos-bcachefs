@@ -96,7 +96,7 @@ jobs:
         run: |
           docker build \
             --build-arg FCOS_STREAM=${{ matrix.fcos_stream }} \
-            --build-arg BCACHE_TAG=${{ steps.bcachefs.outputs.tag }} \
+            --build-arg BCACHEFS_TAG=${{ steps.bcachefs.outputs.tag }} \
             -t ghcr.io/${{ github.repository }}:${{ matrix.fcos_stream }} \
             -t ghcr.io/${{ github.repository }}:${{ steps.bcachefs.outputs.tag }}-${{ matrix.fcos_stream }} \
             -t ghcr.io/${{ github.repository }}:${{ steps.bcachefs.outputs.tag }}-${{ steps.fcos.outputs.fcos_version }}-${{ matrix.fcos_stream }} \
