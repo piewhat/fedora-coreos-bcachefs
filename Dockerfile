@@ -51,8 +51,7 @@ FROM quay.io/fedora/fedora-coreos:${FCOS_STREAM}
 COPY --from=builder /var/tmp/rpmbuild/RPMS/x86_64/bcachefs-tools-0*.rpm /tmp/
 COPY --from=builder /var/tmp/rpmbuild/RPMS/noarch/dkms-bcachefs-*.rpm /tmp/
 
-RUN TARGET_VERSION=$(ls /usr/lib/modules | head -n1) \
-    rpm-ostree install -y "kernel-devel-${TARGET_VERSION}" dkms
+RUN rpm-ostree install -y "kernel-devel-$(ls /usr/lib/modules | head -n1)" dkms
 
 RUN set -eux; \
     rpm-ostree install -y \
