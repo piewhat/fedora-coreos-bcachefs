@@ -39,7 +39,7 @@ RUN mkdir -p \
     /build
 
 WORKDIR /build
-RUN git clone --depth 1 --branch ${BCACHEFS_TAG} \
+RUN git clone --depth 1 --branch "$BCACHEFS_TAG" \
     https://evilpiepirate.org/git/bcachefs-tools.git;
 
 WORKDIR /build/bcachefs-tools
