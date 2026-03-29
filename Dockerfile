@@ -32,6 +32,7 @@ ENV CARGO_HOME=/var/tmp/cargo
 ENV RUSTUP_HOME=/var/tmp/rustup
 ENV HOME=/var/tmp
 ENV TMPDIR=/var/tmp
+ENV RPM_BUILD_NOSOURCEDEBUG=1
 RUN mkdir -p \
     ${RPM_TOPDIR}/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS} \
     ${CARGO_HOME} \
@@ -43,7 +44,8 @@ RUN git clone --depth 1 --branch "$BCACHEFS_TAG" \
     https://evilpiepirate.org/git/bcachefs-tools.git;
 
 WORKDIR /build/bcachefs-tools
-RUN make rpm -j$(nproc)
+RUN set -eux; \
+    make rpm -j$(nproc)
 
 FROM quay.io/fedora/fedora-coreos:${FCOS_STREAM}
 
