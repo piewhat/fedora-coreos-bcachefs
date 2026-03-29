@@ -44,7 +44,8 @@ RUN git clone --depth 1 --branch "$BCACHEFS_TAG" \
     https://evilpiepirate.org/git/bcachefs-tools.git;
 
 WORKDIR /build/bcachefs-tools
-RUN rpmbuild --define "_debugsource_packages 0"
+RUN sed -i '1i %global debug_package %{nil}\n%global _debugsource_packages 0' *.spec
+RUN make rpm -j"$(nproc)"
       
 
 FROM quay.io/fedora/fedora-coreos:${FCOS_STREAM}
