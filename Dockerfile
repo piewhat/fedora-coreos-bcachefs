@@ -43,8 +43,7 @@ RUN git clone --depth 1 --branch "$BCACHEFS_TAG" \
     https://evilpiepirate.org/git/bcachefs-tools.git;
 
 WORKDIR /build/bcachefs-tools
-RUN set -eux; \
-    make rpm -j$(nproc)
+RUN make rpm -j$(nproc)
 
 FROM quay.io/fedora/fedora-coreos:${FCOS_STREAM}
 
