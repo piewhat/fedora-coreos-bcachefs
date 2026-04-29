@@ -53,7 +53,12 @@ FROM quay.io/fedora/fedora-coreos:${FCOS_STREAM}
 COPY --from=builder /var/tmp/rpmbuild/RPMS/x86_64/bcachefs-tools-0*.rpm /tmp/
 COPY --from=builder /var/tmp/rpmbuild/RPMS/noarch/dkms-bcachefs-*.rpm /tmp/
 
-RUN rpm-ostree install -y dkms
+RUN KVER=$(rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}') && \
+    KPATH=$(rpm -q kernel-core --queryformat '%{VERSION}/%{RELEASE}/%{ARCH}') && \
+    rpm-ostree install -y \
+        https://kojipkgs.fedoraproject.org/packages/kernel/${KPATH}/kernel-devel-${KVER}.rpm \
+        https://kojipkgs.fedoraproject.org/packages/kernel/${KPATH}/kernel-devel-matched-${KVER}.rpm \
+        dkms
 
 RUN set -eux; \
     rpm-ostree install -y \
