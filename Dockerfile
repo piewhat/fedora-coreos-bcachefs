@@ -45,6 +45,11 @@ RUN git clone --depth 1 --branch "$BCACHEFS_TAG" \
 
 WORKDIR /build/bcachefs-tools
 RUN sed -i '1i %global debug_package %{nil}\n%global _debugsource_packages 0' *.spec
+
+#temp fix for bcachefs-wait-devices@.service
+RUN sed -i '1i %global debug_package %{nil}\n%global _debugsource_packages 0' *.spec && \
+    sed -i '/%files/a /usr/lib/systemd/system/bcachefs-wait-devices@.service' *.spec
+
 RUN make rpm -j"$(nproc)"
       
 
