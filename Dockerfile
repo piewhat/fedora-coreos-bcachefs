@@ -44,7 +44,7 @@ RUN git clone --depth 1 --branch "$BCACHEFS_TAG" \
     https://evilpiepirate.org/git/bcachefs-tools.git;
 
 WORKDIR /build/bcachefs-tools
-RUN sed -i '1i %global debug_package %{nil}\n%global _debugsource_packages 0' *.spec
+#RUN sed -i '1i %global debug_package %{nil}\n%global _debugsource_packages 0' *.spec
 
 #temp fix for bcachefs-wait-devices@.service
 RUN sed -i '1i %global debug_package %{nil}\n%global _debugsource_packages 0' *.spec && \
