@@ -25,7 +25,8 @@ RUN dnf install -y \
     llvm-devel \
     rust \
     cargo \
-    libattr-devel
+    libattr-devel \
+    libunwind
 
 ENV RPM_TOPDIR=/var/tmp/rpmbuild
 ENV CARGO_HOME=/var/tmp/cargo
