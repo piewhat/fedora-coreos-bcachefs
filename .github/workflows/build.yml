@@ -115,7 +115,7 @@ jobs:
           FCOS="${{ steps.fcos.outputs.fcos_version }}"
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tags=${BASE}:git-${SHORT_REF}-${STREAM}" >> "$GITHUB_OUTPUT"
+            echo "tags=${BASE}:git-${SHORT_REF}-${FCOS}-${STREAM}" >> "$GITHUB_OUTPUT"
           else
             echo "tags=${BASE}:${STREAM} ${BASE}:${REF}-${STREAM} ${BASE}:${REF}-${FCOS}-${STREAM}" >> "$GITHUB_OUTPUT"
           fi
