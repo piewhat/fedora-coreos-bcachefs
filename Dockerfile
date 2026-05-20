@@ -1,7 +1,7 @@
 ARG FCOS_STREAM=stable
 
 FROM quay.io/fedora/fedora-coreos:${FCOS_STREAM} AS builder
-ARG BCACHEFS_TAG
+ARG BCACHEFS_REF
 
 RUN dnf install -y \
     rpm-build \
@@ -41,7 +41,7 @@ RUN mkdir -p \
     /build
 
 WORKDIR /build
-RUN git clone --depth 1 --branch "$BCACHEFS_TAG" \
+RUN git clone --depth 1 --branch "$BCACHEFS_REF" \
     https://evilpiepirate.org/git/bcachefs-tools.git;
 
 WORKDIR /build/bcachefs-tools
