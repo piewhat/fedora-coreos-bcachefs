@@ -41,8 +41,9 @@ RUN mkdir -p \
     /build
 
 WORKDIR /build
-RUN git clone --depth 1 --branch "$BCACHEFS_REF" \
-    https://evilpiepirate.org/git/bcachefs-tools.git;
+RUN git clone https://github.com/koverstreet/bcachefs-tools.git && \
+    cd bcachefs-tools && \
+    git checkout "$BCACHEFS_REF"
 
 WORKDIR /build/bcachefs-tools
 #RUN sed -i '1i %global debug_package %{nil}\n%global _debugsource_packages 0' *.spec
