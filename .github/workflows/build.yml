@@ -4,14 +4,16 @@ on:
   push:
     branches:
       - main
-  schedule:
-    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
       force:
         description: "Force rebuild (ignore FCOS + bcachefs checks)"
         required: false
         default: "false"
+      bcachefs_ref:
+        description: "Specific bcachefs ref to build, e.g. v1.9.0 or a commit SHA (leave empty for latest commit)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -43,47 +45,80 @@ jobs:
           echo "fcos_version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "fcos_build=$LATEST" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve latest bcachefs tag
+      - name: Resolve bcachefs ref
         id: bcachefs
         run: |
-          TAG=$(git ls-remote --tags https://evilpiepirate.org/git/bcachefs-tools.git \
-            | awk -F/ '{print $NF}' \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$' \
-            | grep -v '\^{}' \
-            | sort -V \
-            | tail -n1)
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -n "${{ inputs.bcachefs_ref }}" ]; then
+              REF="${{ inputs.bcachefs_ref }}"
+              echo "Using provided ref: $REF"
+            else
+              REF=$(gh api repos/koverstreet/bcachefs-tools/commits/master \
+                --jq '.sha')
+              echo "Using latest commit: $REF"
+            fi
+          else
+            REF=$(gh api repos/koverstreet/bcachefs-tools/tags \
+              --jq '[.[].name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+"))] | first')
+            echo "Using latest tag: $REF"
+          fi
 
-          if [ -z "$TAG" ]; then
-            echo "No matching bcachefs tag found, aborting"
+          if [ -z "$REF" ]; then
+            echo "Could not resolve a bcachefs ref, aborting"
             exit 1
           fi
 
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          SHORT_REF="${REF:0:12}"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "short_ref=$SHORT_REF" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check if rebuild is needed
         id: check
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
-             [ "${{ inputs.force }}" = "true" ]; then
+          # Manual builds always run
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "build_needed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          
+
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           FILE=".last_build_${{ matrix.fcos_stream }}"
           BUILD_NEEDED=false
 
           if [ ! -f "$FILE" ]; then
             BUILD_NEEDED=true
           else
-            OLD_TAG=$(cut -d',' -f1 "$FILE")
+            OLD_REF=$(cut -d',' -f1 "$FILE")
             OLD_FCOS=$(cut -d',' -f2 "$FILE")
-            if [ "$OLD_TAG" != "${{ steps.bcachefs.outputs.tag }}" ] || \
+            if [ "$OLD_REF" != "${{ steps.bcachefs.outputs.ref }}" ] || \
                [ "$OLD_FCOS" != "${{ steps.fcos.outputs.fcos_build }}" ]; then
               BUILD_NEEDED=true
             fi
           fi
 
           echo "build_needed=$BUILD_NEEDED" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve image tags
+        id: tags
+        if: ${{ steps.check.outputs.build_needed == 'true' }}
+        run: |
+          BASE="ghcr.io/${{ github.repository }}"
+          STREAM="${{ matrix.fcos_stream }}"
+          REF="${{ steps.bcachefs.outputs.ref }}"
+          SHORT_REF="${{ steps.bcachefs.outputs.short_ref }}"
+          FCOS="${{ steps.fcos.outputs.fcos_version }}"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tags=${BASE}:git-${SHORT_REF}-${STREAM}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=${BASE}:${STREAM} ${BASE}:${REF}-${STREAM} ${BASE}:${REF}-${FCOS}-${STREAM}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Log in to GitHub Container Registry
         if: ${{ steps.check.outputs.build_needed == 'true' }}
@@ -94,26 +129,25 @@ jobs:
       - name: Build Docker image
         if: ${{ steps.check.outputs.build_needed == 'true' }}
         run: |
+          TAG_ARGS=$(echo "${{ steps.tags.outputs.tags }}" | xargs -n1 printf -- '-t %s ')
           docker build \
             --build-arg FCOS_STREAM=${{ matrix.fcos_stream }} \
-            --build-arg BCACHEFS_TAG=${{ steps.bcachefs.outputs.tag }} \
-            -t ghcr.io/${{ github.repository }}:${{ matrix.fcos_stream }} \
-            -t ghcr.io/${{ github.repository }}:${{ steps.bcachefs.outputs.tag }}-${{ matrix.fcos_stream }} \
-            -t ghcr.io/${{ github.repository }}:${{ steps.bcachefs.outputs.tag }}-${{ steps.fcos.outputs.fcos_version }}-${{ matrix.fcos_stream }} \
+            --build-arg BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }} \
+            $TAG_ARGS \
             .
 
       - name: Push Docker image
         if: ${{ steps.check.outputs.build_needed == 'true' }}
         run: |
-          docker push ghcr.io/${{ github.repository }}:${{ matrix.fcos_stream }}
-          docker push ghcr.io/${{ github.repository }}:${{ steps.bcachefs.outputs.tag }}-${{ matrix.fcos_stream }}
-          docker push ghcr.io/${{ github.repository }}:${{ steps.bcachefs.outputs.tag }}-${{ steps.fcos.outputs.fcos_version }}-${{ matrix.fcos_stream }}
-      
+          for TAG in ${{ steps.tags.outputs.tags }}; do
+            docker push "$TAG"
+          done
+
       - name: Save last build state
-        if: ${{ steps.check.outputs.build_needed == 'true' }}
+        if: ${{ steps.check.outputs.build_needed == 'true' && github.event_name != 'workflow_dispatch' }}
         run: |
           FILE=".last_build_${{ matrix.fcos_stream }}"
-          echo "${{ steps.bcachefs.outputs.tag }},${{ steps.fcos.outputs.fcos_build }}" > "$FILE"
+          echo "${{ steps.bcachefs.outputs.ref }},${{ steps.fcos.outputs.fcos_build }}" > "$FILE"
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add "$FILE"
