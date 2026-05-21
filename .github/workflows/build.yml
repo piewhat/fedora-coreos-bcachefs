@@ -14,6 +14,10 @@ on:
         description: "Specific bcachefs ref to build, e.g. v1.9.0 or a commit SHA (leave empty for latest commit)"
         required: false
         default: ""
+      triggered_by:
+        description: "Internal: set to 'watcher' to use automated tag format"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -48,7 +52,8 @@ jobs:
       - name: Resolve bcachefs ref
         id: bcachefs
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
+             [ "${{ inputs.triggered_by }}" != "watcher" ]; then
             if [ -n "${{ inputs.bcachefs_ref }}" ]; then
               REF="${{ inputs.bcachefs_ref }}"
               echo "Using provided ref: $REF"
@@ -77,8 +82,9 @@ jobs:
       - name: Check if rebuild is needed
         id: check
         run: |
-          # Manual builds always run
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          # True manual builds (not watcher) always run
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
+             [ "${{ inputs.triggered_by }}" != "watcher" ]; then
             echo "build_needed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -114,9 +120,12 @@ jobs:
           SHORT_REF="${{ steps.bcachefs.outputs.short_ref }}"
           FCOS="${{ steps.fcos.outputs.fcos_version }}"
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
+             [ "${{ inputs.triggered_by }}" != "watcher" ]; then
+            # True manual/git builds get isolated tags with git- prefix
             echo "tags=${BASE}:git-${SHORT_REF}-${FCOS}-${STREAM}" >> "$GITHUB_OUTPUT"
           else
+            # Automated builds (push, watcher) get the full set of tags
             echo "tags=${BASE}:${STREAM} ${BASE}:${REF}-${STREAM} ${BASE}:${REF}-${FCOS}-${STREAM}" >> "$GITHUB_OUTPUT"
           fi
 
@@ -144,7 +153,10 @@ jobs:
           done
 
       - name: Save last build state
-        if: ${{ steps.check.outputs.build_needed == 'true' && github.event_name != 'workflow_dispatch' }}
+        if: >-
+          ${{ steps.check.outputs.build_needed == 'true' &&
+          (github.event_name != 'workflow_dispatch' ||
+          inputs.triggered_by == 'watcher') }}
         run: |
           FILE=".last_build_${{ matrix.fcos_stream }}"
           echo "${{ steps.bcachefs.outputs.ref }},${{ steps.fcos.outputs.fcos_build }}" > "$FILE"
