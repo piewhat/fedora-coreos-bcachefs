@@ -47,7 +47,8 @@ jobs:
         run: |
           gh workflow run build.yml \
             --ref main \
-            -f bcachefs_ref=${{ steps.bcachefs.outputs.tag }}
+            -f bcachefs_ref=${{ steps.bcachefs.outputs.tag }} \
+            -f triggered_by=watcher
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
