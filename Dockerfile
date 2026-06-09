@@ -62,12 +62,10 @@ COPY --from=builder /var/tmp/rpmbuild/RPMS/noarch/dkms-bcachefs-*.rpm /tmp/
 
 RUN KVER=$(rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}') && \
     KPATH=$(rpm -q kernel-core --queryformat '%{VERSION}/%{RELEASE}/%{ARCH}') && \
-    GVER=$(rpm -q glibc --queryformat '%{VERSION}-%{RELEASE}') && \
     rpm-ostree install -y \
-        https://fedoraproject.org{GVER%%-*}/${GVER#*-}/x86_64/glibc-devel-${GVER}.x86_64.rpm \
-        https://fedoraproject.org{KPATH}/kernel-devel-${KVER}.rpm \
-        https://fedoraproject.org{KPATH}/kernel-devel-matched-${KVER}.rpm \
-        gcc dkms
+        https://kojipkgs.fedoraproject.org/packages/kernel/${KPATH}/kernel-devel-${KVER}.rpm \
+        https://kojipkgs.fedoraproject.org/packages/kernel/${KPATH}/kernel-devel-matched-${KVER}.rpm \
+        dkms
 
 RUN set -eux; \
     rpm-ostree install -y \
