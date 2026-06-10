@@ -2,6 +2,8 @@
 
 This repository provides Fedora CoreOS images with the bcachefs kernel module and `bcachefs-tools`.
 
+The module is compiled in a throwaway build stage against the exact kernel of the base image, and only the resulting `.ko` plus the userspace tools are layered on top. **No compiler, kernel headers, or DKMS ship in the final image, and every base package stays exactly as Fedora CoreOS shipped it.**
+
 Images are rebuilt automatically when either:
 
 - A new bcachefs-tools tag is created
@@ -35,7 +37,38 @@ cosign verify ghcr.io/piewhat/fedora-coreos-bcachefs:stable \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-If you configure a sigstore policy on your hosts (`/etc/containers/policy.json` + `registries.d`), you can rebase with the `ostree-image-signed:` prefix instead of `ostree-unverified-registry:` so rpm-ostree verifies every pull.
+### Verified pulls (ostree-image-signed)
+
+Images are additionally signed with a static cosign key (`certs/cosign.pub`)
+so hosts can cryptographically verify every pull. The image ships the public
+key at `/etc/pki/containers/fcos-bcachefs.pub` and the required
+`registries.d` config, so after the first rebase only `policy.json` needs a
+one-time edit:
+
+```
+# 1. (first install only) fetch the public key and registries.d config
+sudo mkdir -p /etc/pki/containers /etc/containers/registries.d
+curl -fsSL https://raw.githubusercontent.com/piewhat/fedora-coreos-bcachefs/main/certs/cosign.pub \
+  | sudo tee /etc/pki/containers/fcos-bcachefs.pub
+curl -fsSL https://raw.githubusercontent.com/piewhat/fedora-coreos-bcachefs/main/containers/fcos-bcachefs.yaml \
+  | sudo tee /etc/containers/registries.d/fcos-bcachefs.yaml
+
+# 2. require a valid signature for this repo in the containers policy
+sudo jq '.transports.docker["ghcr.io/piewhat/fedora-coreos-bcachefs"] =
+  [{"type":"sigstoreSigned",
+    "keyPath":"/etc/pki/containers/fcos-bcachefs.pub",
+    "signedIdentity":{"type":"matchRepository"}}]' \
+  /etc/containers/policy.json | sudo tee /etc/containers/policy.json.new >/dev/null
+sudo mv /etc/containers/policy.json.new /etc/containers/policy.json
+
+# 3. rebase with enforcement
+sudo bootc switch --enforce-container-sigpolicy ghcr.io/piewhat/fedora-coreos-bcachefs:stable
+# or: sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/piewhat/fedora-coreos-bcachefs:stable
+```
+
+From then on every update pull fails closed unless the image carries a valid
+signature from this repository's key. The keyless GitHub-OIDC signature
+shown above exists alongside this for provenance auditing.
 
 ---
 
@@ -62,6 +95,12 @@ Check that bcachefs is available:
 ```
 lsmod | grep bcachefs
 bcachefs version
+```
+
+To roll back to your previous deployment at any time:
+
+```
+sudo rpm-ostree rollback
 ```
 
 ---
