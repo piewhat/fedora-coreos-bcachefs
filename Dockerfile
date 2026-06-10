@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 ARG BASE_IMAGE=quay.io/fedora/fedora-coreos:stable
 
 FROM ${BASE_IMAGE} AS builder
