@@ -93,8 +93,9 @@ RUN --mount=type=secret,id=module_signing_key \
             "$SIGN" sha256 /run/secrets/module_signing_key /MOK.der "$ko"; \
             modinfo -F signer "$ko"; \
             case "$f" in \
-                *.ko.xz)  xz -f "$ko";; \
-                *.ko.zst) zstd -f --rm "$ko";; \
+                *.ko.xz)  xz -f --check=crc32 --lzma2=dict=1MiB "$ko"; \
+                          xz -lv "${ko}.xz" | grep -q "CRC32";; \
+                *.ko.zst) zstd -f --rm -q "$ko";; \
             esac; \
         done; \
     else \
