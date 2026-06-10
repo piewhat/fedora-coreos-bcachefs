@@ -61,8 +61,6 @@ jobs:
           DIGEST=$(skopeo inspect --format '{{.Digest}}' "docker://${REF}")
           PINNED="quay.io/fedora/fedora-coreos@${DIGEST}"
 
-          # FCOS version for human-readable tags, read from the image
-          # itself (falls back to the streams metadata).
           VERSION=$(skopeo inspect --format '{{index .Labels "org.opencontainers.image.version"}}' "docker://${PINNED}")
           if [ -z "$VERSION" ] || [ "$VERSION" = "<no value>" ]; then
             VERSION=$(curl -s "https://builds.coreos.fedoraproject.org/streams/${{ matrix.fcos_stream }}.json" \
@@ -86,8 +84,6 @@ jobs:
               echo "Using latest commit: $REF"
             fi
           else
-            # Tags from the API are creation-ordered, not version-ordered;
-            # sort numerically so a hotfix on an old series can't win.
             REF=$(gh api 'repos/koverstreet/bcachefs-tools/tags?per_page=100' \
               --jq '[.[].name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))]
                     | sort_by(.[1:] | split(".") | map(tonumber)) | last')
@@ -107,7 +103,6 @@ jobs:
       - name: Check if rebuild is needed
         id: check
         run: |
-          # True manual builds (not watcher) always run
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
              [ "${{ inputs.triggered_by }}" != "watcher" ]; then
             echo "build_needed=true" >> "$GITHUB_OUTPUT"
@@ -144,7 +139,6 @@ jobs:
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
              [ "${{ inputs.triggered_by }}" != "watcher" ]; then
-            # True manual/git builds get isolated tags with git- prefix
             TAGS="${IMAGE}:git-${SHORT_REF}-${FCOS}-${STREAM}"
           else
             TAGS=$(printf '%s\n%s\n%s' \
@@ -218,13 +212,9 @@ jobs:
             rpm -q bcachefs-tools
             bcachefs version
             test -f /etc/modules-load.d/bcachefs.conf
-            # zincati must be masked (symlink to /dev/null)
             test "$(readlink /etc/systemd/system/zincati.service)" = "/dev/null"
-            # bootc update timer enabled with our nightly-window drop-in
             test -e /etc/systemd/system/timers.target.wants/bootc-fetch-apply-updates.timer
             test -f /usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d/10-update-window.conf
-            # when a signing key is configured, the shipped module must
-            # actually carry a signature
             if [ "$SIGNING_ENABLED" = "true" ]; then
               SIGNER=$(modinfo -k "$KVER" -F signer bcachefs)
               echo "module signer: ${SIGNER}"
@@ -263,6 +253,4 @@ jobs:
       - name: Sign image
         if: ${{ steps.check.outputs.build_needed == 'true' }}
         run: |
-          # All tags point at the same manifest; one signature on the
-          # digest covers them all.
           cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
