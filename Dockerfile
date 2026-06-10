@@ -110,6 +110,7 @@ RUN --mount=type=bind,from=builder,source=/var/tmp/rpmbuild/RPMS,target=/rpms \
 COPY certs/MOK.der /etc/pki/fcos-bcachefs/MOK.der
 COPY certs/cosign.pub /etc/pki/containers/fcos-bcachefs.pub
 COPY containers/fcos-bcachefs.yaml /etc/containers/registries.d/fcos-bcachefs.yaml
+COPY containers/policy.json /etc/containers/policy.json
 
 RUN --mount=type=bind,from=builder,source=/out/modules,target=/prebuilt \
     set -eux; \
