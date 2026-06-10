@@ -39,36 +39,33 @@ cosign verify ghcr.io/piewhat/fedora-coreos-bcachefs:stable \
 
 ### Verified pulls (ostree-image-signed)
 
-Images are additionally signed with a static cosign key (`certs/cosign.pub`)
-so hosts can cryptographically verify every pull. The image ships the public
-key at `/etc/pki/containers/fcos-bcachefs.pub` and the required
-`registries.d` config, so after the first rebase only `policy.json` needs a
-one-time edit:
+Images are additionally signed with a static cosign key (`certs/cosign.pub`).
+The image ships everything needed for verification: the public key at
+`/etc/pki/containers/fcos-bcachefs.pub`, the `registries.d` config, and a
+`policy.json` that requires a valid signature for this repository (and
+changes nothing else). So enabling verification is just two rebases:
 
 ```
-# 1. (first install only) fetch the public key and registries.d config
-sudo mkdir -p /etc/pki/containers /etc/containers/registries.d
-curl -fsSL https://raw.githubusercontent.com/piewhat/fedora-coreos-bcachefs/main/certs/cosign.pub \
-  | sudo tee /etc/pki/containers/fcos-bcachefs.pub
-curl -fsSL https://raw.githubusercontent.com/piewhat/fedora-coreos-bcachefs/main/containers/fcos-bcachefs.yaml \
-  | sudo tee /etc/containers/registries.d/fcos-bcachefs.yaml
+# from stock FCOS (zincati still running, hence --bypass-driver):
+sudo rpm-ostree rebase --bypass-driver --reboot \
+  ostree-unverified-registry:ghcr.io/piewhat/fedora-coreos-bcachefs:stable
 
-# 2. require a valid signature for this repo in the containers policy
-sudo jq '.transports.docker["ghcr.io/piewhat/fedora-coreos-bcachefs"] =
-  [{"type":"sigstoreSigned",
-    "keyPath":"/etc/pki/containers/fcos-bcachefs.pub",
-    "signedIdentity":{"type":"matchRepository"}}]' \
-  /etc/containers/policy.json | sudo tee /etc/containers/policy.json.new >/dev/null
-sudo mv /etc/containers/policy.json.new /etc/containers/policy.json
-
-# 3. rebase with enforcement
-sudo bootc switch --enforce-container-sigpolicy ghcr.io/piewhat/fedora-coreos-bcachefs:stable
-# or: sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/piewhat/fedora-coreos-bcachefs:stable
+# after the reboot, flip the origin to the signed transport — the
+# verification config is now on disk, and the layers are already cached:
+sudo rpm-ostree rebase --reboot \
+  ostree-image-signed:docker://ghcr.io/piewhat/fedora-coreos-bcachefs:stable
 ```
 
-From then on every update pull fails closed unless the image carries a valid
-signature from this repository's key. The keyless GitHub-OIDC signature
-shown above exists alongside this for provenance auditing.
+From then on every update pull fails closed unless the image carries a
+valid signature from this repository's key. Verify the state of a host
+with `rpm-ostree status` (the origin shows `ostree-image-signed:`).
+
+A host with locally-modified `/etc/containers/policy.json` keeps its own
+version (ostree three-way /etc merge); merge the `transports.docker` entry
+from this repo's `containers/policy.json` manually in that case.
+
+The keyless GitHub-OIDC signature shown above exists alongside the static
+key for provenance auditing.
 
 ---
 
@@ -77,12 +74,12 @@ shown above exists alongside this for provenance auditing.
 To switch your system to use one of these images:
 
 ```
-sudo bootc switch ghcr.io/piewhat/fedora-coreos-bcachefs:stable
+sudo rpm-ostree rebase --bypass-driver --reboot \
+  ostree-unverified-registry:ghcr.io/piewhat/fedora-coreos-bcachefs:stable
 ```
 
 > Replace `stable` with `testing` if you want the testing stream.
-> `sudo rpm-ostree rebase ostree-unverified-registry:ghcr.io/piewhat/fedora-coreos-bcachefs:stable`
-> works too; both track the same image and automatic updates work either way.
+> `--bypass-driver` is only needed while Zincati is still running (stock FCOS).
 
 After rebasing, reboot to apply the changes:
 
@@ -97,12 +94,6 @@ lsmod | grep bcachefs
 bcachefs version
 ```
 
-To roll back to your previous deployment at any time:
-
-```
-sudo rpm-ostree rollback
-```
-
 ---
 
 ## Automatic updates
@@ -112,28 +103,24 @@ Zincati follows Fedora's official update graph, which only knows official
 an official digest over this one and silently drop the bcachefs layer.
 **Zincati is therefore masked in this image.**
 
-Updates are handled by bootc's own `bootc-fetch-apply-updates.timer`
-(enabled in this image), which checks the registry for a new image digest,
-stages it, and reboots only when an update was actually pulled. A shipped
-drop-in constrains it to a nightly window: daily at ~04:00 with up to 30
-minutes of randomized delay, instead of bootc's default every-8-hours
-cadence.
-
-Adjust the schedule or behavior on a host — these edits live in `/etc`,
-win over the image's drop-in, and persist across updates:
+Updates are handled by a bundled systemd timer that runs
+`rpm-ostree upgrade --reboot` daily at ~04:00 (with up to 30 minutes of
+randomized delay). Layered packages are reapplied on every update. Adjust
+the schedule or behavior — these edits live in `/etc` and persist across
+updates:
 
 ```
-sudo systemctl edit bootc-fetch-apply-updates.timer
-sudo systemctl edit bootc-fetch-apply-updates.service
+sudo systemctl edit rpm-ostreed-oci-update.timer
+sudo systemctl edit rpm-ostreed-oci-update.service
 ```
 
 To opt out of automatic updates entirely:
 
 ```
-sudo systemctl disable --now bootc-fetch-apply-updates.timer
+sudo systemctl disable --now rpm-ostreed-oci-update.timer
 ```
 
-and update manually with `sudo bootc upgrade --apply` whenever you choose.
+and update manually with `sudo rpm-ostree upgrade` whenever you choose.
 
 ---
 
