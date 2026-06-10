@@ -184,6 +184,7 @@ jobs:
         with:
           context: .
           load: true
+          provenance: false
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             BASE_IMAGE=${{ steps.base.outputs.pinned }}
@@ -232,6 +233,7 @@ jobs:
         with:
           context: .
           push: true
+          provenance: false
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             BASE_IMAGE=${{ steps.base.outputs.pinned }}
