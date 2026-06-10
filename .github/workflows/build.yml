@@ -13,11 +13,7 @@ on:
         required: false
         default: "false"
       bcachefs_ref:
-        description: "Specific bcachefs ref to build, e.g. v1.9.0 or a commit SHA (leave empty for latest commit)"
-        required: false
-        default: ""
-      triggered_by:
-        description: "Internal: set to 'watcher' to use automated tag format"
+        description: "Build a specific bcachefs ref (tag or commit SHA) as an isolated git- tagged image. Leave empty for a normal build of the latest tag."
         required: false
         default: ""
 
@@ -74,15 +70,9 @@ jobs:
       - name: Resolve bcachefs ref
         id: bcachefs
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
-             [ "${{ inputs.triggered_by }}" != "watcher" ]; then
-            if [ -n "${{ inputs.bcachefs_ref }}" ]; then
-              REF="${{ inputs.bcachefs_ref }}"
-              echo "Using provided ref: $REF"
-            else
-              REF=$(gh api repos/koverstreet/bcachefs-tools/commits/master --jq '.sha')
-              echo "Using latest commit: $REF"
-            fi
+          if [ -n "${{ inputs.bcachefs_ref }}" ]; then
+            REF="${{ inputs.bcachefs_ref }}"
+            echo "Using provided ref: $REF"
           else
             REF=$(gh api 'repos/koverstreet/bcachefs-tools/tags?per_page=100' \
               --jq '[.[].name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))]
@@ -103,8 +93,7 @@ jobs:
       - name: Check if rebuild is needed
         id: check
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
-             [ "${{ inputs.triggered_by }}" != "watcher" ]; then
+          if [ -n "${{ inputs.bcachefs_ref }}" ]; then
             echo "build_needed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -137,8 +126,7 @@ jobs:
           SHORT_REF="${{ steps.bcachefs.outputs.short_ref }}"
           FCOS="${{ steps.base.outputs.fcos_version }}"
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
-             [ "${{ inputs.triggered_by }}" != "watcher" ]; then
+          if [ -n "${{ inputs.bcachefs_ref }}" ]; then
             TAGS="${IMAGE}:git-${SHORT_REF}-${FCOS}-${STREAM}"
           else
             TAGS=$(printf '%s\n%s\n%s' \
@@ -216,8 +204,7 @@ jobs:
             bcachefs version
             test -f /etc/modules-load.d/bcachefs.conf
             test "$(readlink /etc/systemd/system/zincati.service)" = "/dev/null"
-            test -e /etc/systemd/system/timers.target.wants/bootc-fetch-apply-updates.timer
-            test -f /usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d/10-update-window.conf
+            test -e /etc/systemd/system/timers.target.wants/rpm-ostreed-oci-update.timer
             if [ "$SIGNING_ENABLED" = "true" ]; then
               SIGNER=$(modinfo -k "$KVER" -F signer bcachefs)
               echo "module signer: ${SIGNER}"
@@ -263,4 +250,5 @@ jobs:
           fi
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
