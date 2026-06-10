@@ -68,9 +68,11 @@ jobs:
               | jq -r '.architectures.x86_64.artifacts.metal.release')
           fi
 
+          FREL="${VERSION%%.*}"
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "pinned=${PINNED}" >> "$GITHUB_OUTPUT"
           echo "fcos_version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "builder=quay.io/fedora/fedora:${FREL}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve bcachefs ref
         id: bcachefs
@@ -191,6 +193,7 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             BASE_IMAGE=${{ steps.base.outputs.pinned }}
+            BUILDER_IMAGE=${{ steps.base.outputs.builder }}
             BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }}
             SIGNING_FINGERPRINT=${{ steps.signing.outputs.fingerprint }}
           secrets: |
@@ -217,9 +220,12 @@ jobs:
             case "$VERMAGIC" in "$KVER "*) ;; *) echo "vermagic mismatch: $VERMAGIC != $KVER"; exit 1;; esac
             rpm -q bcachefs-tools
             bcachefs version
-            test -f /etc/modules-load.d/bcachefs.conf
+            rpm -q kmod-bcachefs
+            test -f /usr/lib/modules-load.d/bcachefs.conf
             test "$(readlink /etc/systemd/system/zincati.service)" = "/dev/null"
-            test -e /etc/systemd/system/timers.target.wants/rpm-ostreed-oci-update.timer
+            test -e /etc/systemd/system/timers.target.wants/rpm-ostreed-automatic.timer
+            test -f /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/10-update-window.conf
+            grep -q "AutomaticUpdatePolicy=apply" /etc/rpm-ostreed.conf
             if [ "$SIGNING_ENABLED" = "true" ]; then
               SIGNER=$(modinfo -k "$KVER" -F signer bcachefs)
               echo "module signer: ${SIGNER}"
@@ -239,6 +245,7 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             BASE_IMAGE=${{ steps.base.outputs.pinned }}
+            BUILDER_IMAGE=${{ steps.base.outputs.builder }}
             BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }}
             SIGNING_FINGERPRINT=${{ steps.signing.outputs.fingerprint }}
           secrets: |
