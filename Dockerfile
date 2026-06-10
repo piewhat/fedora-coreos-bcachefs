@@ -34,7 +34,10 @@ RUN dnf install -y \
     rust \
     cargo \
     libattr-devel \
-    libunwind-devel
+    libunwind-devel \
+    openssl \
+    xz \
+    zstd
 
 ENV RPM_TOPDIR=/var/tmp/rpmbuild \
     CARGO_HOME=/var/tmp/cargo \
@@ -71,10 +74,38 @@ RUN set -eux; \
         -name '*.ko*' -exec cp -v {} /out/modules/ \; ; \
     test -n "$(ls -A /out/modules)"
 
+ARG SIGNING_FINGERPRINT=""
+COPY certs/MOK.der /MOK.der
+RUN --mount=type=secret,id=module_signing_key \
+    set -eux; \
+    echo "signing setup: ${SIGNING_FINGERPRINT}"; \
+    if [ -s /run/secrets/module_signing_key ]; then \
+        KVER=$(rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}'); \
+        SIGN="/usr/src/kernels/${KVER}/scripts/sign-file"; \
+        for f in /out/modules/*.ko*; do \
+            case "$f" in \
+                *.ko.xz)  xz -d "$f"; ko="${f%.xz}";; \
+                *.ko.zst) zstd -d --rm "$f"; ko="${f%.zst}";; \
+                *.ko)     ko="$f";; \
+                *)        continue;; \
+            esac; \
+            "$SIGN" sha256 /run/secrets/module_signing_key /MOK.der "$ko"; \
+            modinfo -F signer "$ko"; \
+            case "$f" in \
+                *.ko.xz)  xz -f "$ko";; \
+                *.ko.zst) zstd -f --rm "$ko";; \
+            esac; \
+        done; \
+    else \
+        echo "WARNING: no module signing key provided, shipping unsigned module"; \
+    fi
+
 FROM ${BASE_IMAGE}
 
 RUN --mount=type=bind,from=builder,source=/var/tmp/rpmbuild/RPMS,target=/rpms \
-    rpm-ostree install -y /rpms/x86_64/bcachefs-tools-0*.rpm
+    rpm-ostree install -y mokutil /rpms/x86_64/bcachefs-tools-0*.rpm
+
+COPY certs/MOK.der /etc/pki/fcos-bcachefs/MOK.der
 
 RUN --mount=type=bind,from=builder,source=/out/modules,target=/prebuilt \
     set -eux; \
