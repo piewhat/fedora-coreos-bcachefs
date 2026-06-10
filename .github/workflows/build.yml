@@ -54,7 +54,12 @@ jobs:
         id: base
         run: |
           REF="quay.io/fedora/fedora-coreos:${{ matrix.fcos_stream }}"
-          DIGEST=$(skopeo inspect --format '{{.Digest}}' "docker://${REF}")
+          for i in 1 2 3 4 5; do
+            DIGEST=$(skopeo inspect --format '{{.Digest}}' "docker://${REF}") && break
+            echo "skopeo inspect failed (attempt $i), retrying..."
+            sleep $((i * 15))
+          done
+          test -n "$DIGEST"
           PINNED="quay.io/fedora/fedora-coreos@${DIGEST}"
 
           VERSION=$(skopeo inspect --format '{{index .Labels "org.opencontainers.image.version"}}' "docker://${PINNED}")
@@ -103,9 +108,19 @@ jobs:
             exit 0
           fi
 
-          CURRENT=$(skopeo inspect \
-            --format '{{index .Labels "io.fcos-bcachefs.base-digest"}},{{index .Labels "io.fcos-bcachefs.bcachefs-ref"}}' \
-            "docker://${IMAGE}:${{ matrix.fcos_stream }}" 2>/dev/null || echo "none")
+          CURRENT=""
+          for i in 1 2 3; do
+            CURRENT=$(skopeo inspect \
+              --format '{{index .Labels "io.fcos-bcachefs.base-digest"}},{{index .Labels "io.fcos-bcachefs.bcachefs-ref"}}' \
+              "docker://${IMAGE}:${{ matrix.fcos_stream }}" 2>&1) && break
+            if echo "$CURRENT" | grep -q "manifest unknown"; then
+              CURRENT="none"
+              break
+            fi
+            echo "skopeo inspect failed (attempt $i), retrying..."
+            CURRENT="none"
+            sleep $((i * 15))
+          done
           WANTED="${{ steps.base.outputs.digest }},${{ steps.bcachefs.outputs.ref }}"
 
           echo "current: ${CURRENT}"
