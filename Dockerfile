@@ -46,14 +46,8 @@ RUN git clone https://github.com/koverstreet/bcachefs-tools.git && \
     git checkout "$BCACHEFS_REF"
 
 WORKDIR /build/bcachefs-tools
-#RUN sed -i '1i %global debug_package %{nil}\n%global _debugsource_packages 0' *.spec
-
-#temp fix for bcachefs-wait-devices@.service
-RUN sed -i '1i %global debug_package %{nil}\n%global _debugsource_packages 0' *.spec && \
-    sed -i '/%files/a /usr/lib/systemd/system/bcachefs-wait-devices@.service' *.spec
 
 RUN make rpm -j"$(nproc)"
-      
 
 FROM quay.io/fedora/fedora-coreos:${FCOS_STREAM}
 
