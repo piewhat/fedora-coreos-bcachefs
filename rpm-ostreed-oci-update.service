@@ -6,5 +6,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-# --reboot only triggers if a new image version is successfully pulled
+TimeoutStartSec=infinity
+# --reboot only triggers if a new image version is successfully pulled.
+# If you'd rather stage updates and reboot on your own schedule, change
+# this to `rpm-ostree upgrade` via:
+#   systemctl edit rpm-ostreed-oci-update.service
 ExecStart=/usr/bin/rpm-ostree upgrade --reboot
