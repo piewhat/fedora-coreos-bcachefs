@@ -2,8 +2,6 @@
 
 This repository provides Fedora CoreOS images with the bcachefs kernel module and `bcachefs-tools`.
 
-The module is compiled in a throwaway build stage against the exact kernel of the base image, and only the resulting `.ko` plus the userspace tools are layered on top. **No compiler, kernel headers, or DKMS ship in the final image, and every base package stays exactly as Fedora CoreOS shipped it.**
-
 Images are rebuilt automatically when either:
 
 - A new bcachefs-tools tag is created
