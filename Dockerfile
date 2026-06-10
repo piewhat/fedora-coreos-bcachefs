@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 ARG BASE_IMAGE=quay.io/fedora/fedora-coreos:stable
 
 FROM ${BASE_IMAGE} AS builder
@@ -92,8 +93,9 @@ RUN --mount=type=secret,id=module_signing_key \
             "$SIGN" sha256 /run/secrets/module_signing_key /MOK.der "$ko"; \
             modinfo -F signer "$ko"; \
             case "$f" in \
-                *.ko.xz)  xz -f "$ko";; \
-                *.ko.zst) zstd -f --rm "$ko";; \
+                *.ko.xz)  xz -f --check=crc32 --lzma2=dict=1MiB "$ko"; \
+                          xz -lv "${ko}.xz" | grep -q "CRC32";; \
+                *.ko.zst) zstd -f --rm -q "$ko";; \
             esac; \
         done; \
     else \
@@ -106,6 +108,9 @@ RUN --mount=type=bind,from=builder,source=/var/tmp/rpmbuild/RPMS,target=/rpms \
     rpm-ostree install -y mokutil /rpms/x86_64/bcachefs-tools-0*.rpm
 
 COPY certs/MOK.der /etc/pki/fcos-bcachefs/MOK.der
+COPY certs/cosign.pub /etc/pki/containers/fcos-bcachefs.pub
+COPY containers/fcos-bcachefs.yaml /etc/containers/registries.d/fcos-bcachefs.yaml
+COPY containers/policy.json /etc/containers/policy.json
 
 RUN --mount=type=bind,from=builder,source=/out/modules,target=/prebuilt \
     set -eux; \
@@ -119,10 +124,9 @@ RUN set -eux; \
     echo "bcachefs" > /etc/modules-load.d/bcachefs.conf; \
     systemctl mask zincati.service
 
-COPY rpm-ostreed-oci-update.service /etc/systemd/system/rpm-ostreed-oci-update.service
-COPY rpm-ostreed-oci-update.timer /etc/systemd/system/rpm-ostreed-oci-update.timer
-RUN ln -s /etc/systemd/system/rpm-ostreed-oci-update.timer \
-    /etc/systemd/system/timers.target.wants/rpm-ostreed-oci-update.timer
+COPY systemd/10-update-window.conf \
+    /usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d/10-update-window.conf
+RUN systemctl enable bootc-fetch-apply-updates.timer
 
 RUN bootc container lint || echo "bootc lint reported issues (non-fatal)"
 
