@@ -1,17 +1,14 @@
 # syntax=docker/dockerfile:1.7
 ARG BASE_IMAGE=quay.io/fedora/fedora-coreos:stable
+ARG BUILDER_IMAGE=quay.io/fedora/fedora:latest
 
-FROM ${BASE_IMAGE} AS builder
+FROM ${BASE_IMAGE} AS kinfo
+RUN rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}' > /kver && \
+    rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}' > /kvr && \
+    rpm -q kernel-core --queryformat '%{ARCH}' > /karch
+
+FROM ${BUILDER_IMAGE} AS tools
 ARG BCACHEFS_REF
-
-RUN set -eux; \
-    KVER=$(rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}'); \
-    KPATH=$(rpm -q kernel-core --queryformat '%{VERSION}/%{RELEASE}/%{ARCH}'); \
-    dnf install -y "kernel-devel-${KVER}" dkms || \
-    dnf install -y \
-        "https://kojipkgs.fedoraproject.org/packages/kernel/${KPATH}/kernel-devel-${KVER}.rpm" \
-        dkms
-
 RUN dnf install -y \
     rpm-build \
     jq \
@@ -35,98 +32,129 @@ RUN dnf install -y \
     rust \
     cargo \
     libattr-devel \
-    libunwind-devel \
-    openssl \
-    xz \
-    zstd
-
-ENV RPM_TOPDIR=/var/tmp/rpmbuild \
-    CARGO_HOME=/var/tmp/cargo \
-    RUSTUP_HOME=/var/tmp/rustup \
-    HOME=/var/tmp \
-    TMPDIR=/var/tmp \
+    libunwind-devel
+ENV RPM_TOPDIR=/root/rpmbuild \
     RPM_BUILD_NOSOURCEDEBUG=1
-
-RUN mkdir -p \
-    ${RPM_TOPDIR}/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS} \
-    ${CARGO_HOME} \
-    ${RUSTUP_HOME} \
-    /build
-
+RUN mkdir -p ${RPM_TOPDIR}/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS} /build
 WORKDIR /build
 RUN git clone https://github.com/koverstreet/bcachefs-tools.git && \
     cd bcachefs-tools && \
     git checkout "$BCACHEFS_REF"
-
 WORKDIR /build/bcachefs-tools
 RUN make rpm -j"$(nproc)"
 
+FROM ${BUILDER_IMAGE} AS module
+COPY --from=kinfo /kver /kvr /karch /
 RUN set -eux; \
-    KVER=$(rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}'); \
-    rpm -i --noscripts --nodeps ${RPM_TOPDIR}/RPMS/noarch/dkms-bcachefs-*.rpm; \
+    dnf install -y fedora-repos-archive dkms rpm-build kmod openssl xz zstd; \
+    if ! dnf install -y \
+        "kernel-core-$(cat /kver)" \
+        "kernel-modules-core-$(cat /kver)" \
+        "kernel-devel-$(cat /kver)"; then \
+        dnf install -y koji; \
+        mkdir /koji; \
+        cd /koji; \
+        koji download-build --noprogress --arch "$(cat /karch)" "kernel-$(cat /kvr)"; \
+        dnf install -y \
+            ./kernel-core-*.rpm \
+            ./kernel-modules-core-*.rpm \
+            ./kernel-devel-*.rpm; \
+        cd /; \
+        rm -rf /koji; \
+    fi
+RUN --mount=type=bind,from=tools,source=/root/rpmbuild/RPMS,target=/rpms \
+    set -eux; \
+    KVER=$(cat /kver); \
+    rpm -i --noscripts --nodeps /rpms/noarch/dkms-bcachefs-*.rpm; \
     SRC=$(ls -d /usr/src/bcachefs-*); \
     PACKAGE_NAME=$(sed -n 's/^PACKAGE_NAME="\?\([^"]*\)"\?.*/\1/p' "${SRC}/dkms.conf"); \
     PACKAGE_VERSION=$(sed -n 's/^PACKAGE_VERSION="\?\([^"]*\)"\?.*/\1/p' "${SRC}/dkms.conf"); \
     : "${PACKAGE_NAME:=bcachefs}"; \
     : "${PACKAGE_VERSION:=$(basename "${SRC}" | cut -d- -f2-)}"; \
     dkms install "${PACKAGE_NAME}/${PACKAGE_VERSION}" -k "${KVER}" --force; \
-    mkdir -p /out/modules; \
-    find "/lib/modules/${KVER}" \( -path '*/extra/*' -o -path '*/updates/*' \) \
-        -name '*.ko*' -exec cp -v {} /out/modules/ \; ; \
-    test -n "$(ls -A /out/modules)"
-
+    echo "${PACKAGE_VERSION}" > /bver; \
+    mkdir -p /out; \
+    KO=$(find "/lib/modules/${KVER}" \( -path '*/extra/*' -o -path '*/updates/*' \) -name 'bcachefs.ko*' | head -n1); \
+    test -n "$KO"; \
+    cp "$KO" /out/; \
+    cd /out; \
+    case "$(basename "$KO")" in \
+        *.ko.xz)  xz -d bcachefs.ko.xz;; \
+        *.ko.zst) zstd -d --rm -q bcachefs.ko.zst;; \
+    esac; \
+    test -f /out/bcachefs.ko
 ARG SIGNING_FINGERPRINT=""
 COPY certs/MOK.der /MOK.der
 RUN --mount=type=secret,id=module_signing_key \
     set -eux; \
     echo "signing setup: ${SIGNING_FINGERPRINT}"; \
+    KVER=$(cat /kver); \
     if [ -s /run/secrets/module_signing_key ]; then \
-        KVER=$(rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}'); \
-        SIGN="/usr/src/kernels/${KVER}/scripts/sign-file"; \
-        for f in /out/modules/*.ko*; do \
-            case "$f" in \
-                *.ko.xz)  xz -d "$f"; ko="${f%.xz}";; \
-                *.ko.zst) zstd -d --rm "$f"; ko="${f%.zst}";; \
-                *.ko)     ko="$f";; \
-                *)        continue;; \
-            esac; \
-            "$SIGN" sha256 /run/secrets/module_signing_key /MOK.der "$ko"; \
-            modinfo -F signer "$ko"; \
-            case "$f" in \
-                *.ko.xz)  xz -f --check=crc32 --lzma2=dict=1MiB "$ko"; \
-                          xz -lv "${ko}.xz" | grep -q "CRC32";; \
-                *.ko.zst) zstd -f --rm -q "$ko";; \
-            esac; \
-        done; \
+        "/usr/src/kernels/${KVER}/scripts/sign-file" sha256 \
+            /run/secrets/module_signing_key /MOK.der /out/bcachefs.ko; \
+        modinfo -F signer /out/bcachefs.ko; \
     else \
         echo "WARNING: no module signing key provided, shipping unsigned module"; \
-    fi
+    fi; \
+    xz --check=crc32 --lzma2=dict=1MiB /out/bcachefs.ko; \
+    xz -lv /out/bcachefs.ko.xz | grep -q "CRC32"
+RUN set -eux; \
+    KVER=$(cat /kver); \
+    BVER=$(tr '-' '.' < /bver); \
+    KREL=$(echo "${KVER}" | tr '-' '_'); \
+    mkdir -p /root/rpmbuild/{SPECS,SOURCES,RPMS}; \
+    cp /out/bcachefs.ko.xz /root/rpmbuild/SOURCES/; \
+    { \
+    echo "Name: kmod-bcachefs"; \
+    echo "Version: ${BVER}"; \
+    echo "Release: 1.${KREL}"; \
+    echo "Summary: Prebuilt bcachefs kernel module for kernel ${KVER}"; \
+    echo "License: GPL-2.0-only"; \
+    echo "Source0: bcachefs.ko.xz"; \
+    echo "BuildArch: $(cat /karch)"; \
+    echo "Requires: kernel-uname-r = ${KVER}"; \
+    echo ""; \
+    echo "%description"; \
+    echo "bcachefs ${BVER} kernel module built for kernel ${KVER}."; \
+    echo ""; \
+    echo "%install"; \
+    echo "install -D -m 0644 %{SOURCE0} %{buildroot}/usr/lib/modules/${KVER}/extra/bcachefs.ko.xz"; \
+    echo "install -d %{buildroot}/usr/lib/modules-load.d"; \
+    echo "echo bcachefs > %{buildroot}/usr/lib/modules-load.d/bcachefs.conf"; \
+    echo ""; \
+    echo "%post"; \
+    echo "depmod -a ${KVER} || :"; \
+    echo ""; \
+    echo "%files"; \
+    echo "/usr/lib/modules/${KVER}/extra/bcachefs.ko.xz"; \
+    echo "/usr/lib/modules-load.d/bcachefs.conf"; \
+    } > /root/rpmbuild/SPECS/kmod-bcachefs.spec; \
+    rpmbuild -bb /root/rpmbuild/SPECS/kmod-bcachefs.spec; \
+    mkdir -p /out/rpms; \
+    cp /root/rpmbuild/RPMS/*/kmod-bcachefs-*.rpm /out/rpms/
 
 FROM ${BASE_IMAGE}
-
-RUN --mount=type=bind,from=builder,source=/var/tmp/rpmbuild/RPMS,target=/rpms \
-    rpm-ostree install -y mokutil /rpms/x86_64/bcachefs-tools-0*.rpm
+RUN --mount=type=bind,from=tools,source=/root/rpmbuild/RPMS,target=/tools-rpms \
+    --mount=type=bind,from=module,source=/out/rpms,target=/kmod-rpms \
+    rpm-ostree install -y \
+        mokutil \
+        /tools-rpms/*/bcachefs-tools-0*.rpm \
+        /kmod-rpms/kmod-bcachefs-*.rpm
+RUN set -eux; \
+    KVER=$(rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}'); \
+    depmod -a "${KVER}"; \
+    modinfo -k "${KVER}" bcachefs
 
 COPY certs/MOK.der /etc/pki/fcos-bcachefs/MOK.der
 COPY certs/cosign.pub /etc/pki/containers/fcos-bcachefs.pub
 COPY containers/fcos-bcachefs.yaml /etc/containers/registries.d/fcos-bcachefs.yaml
 COPY containers/policy.json /etc/containers/policy.json
-
-RUN --mount=type=bind,from=builder,source=/out/modules,target=/prebuilt \
-    set -eux; \
-    KVER=$(rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}'); \
-    install -d -m 0755 "/usr/lib/modules/${KVER}/extra"; \
-    install -m 0644 /prebuilt/*.ko* "/usr/lib/modules/${KVER}/extra/"; \
-    depmod -a "${KVER}"; \
-    modinfo -k "${KVER}" bcachefs
+COPY systemd/10-update-window.conf /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/10-update-window.conf
 
 RUN set -eux; \
-    echo "bcachefs" > /etc/modules-load.d/bcachefs.conf; \
+    printf '[Daemon]\nAutomaticUpdatePolicy=apply\n' > /etc/rpm-ostreed.conf; \
+    systemctl enable rpm-ostreed-automatic.timer; \
     systemctl mask zincati.service
-
-COPY systemd/rpm-ostreed-oci-update.service /usr/lib/systemd/system/rpm-ostreed-oci-update.service
-COPY systemd/rpm-ostreed-oci-update.timer /usr/lib/systemd/system/rpm-ostreed-oci-update.timer
-RUN systemctl enable rpm-ostreed-oci-update.timer
 
 RUN bootc container lint || echo "bootc lint reported issues (non-fatal)"
 
