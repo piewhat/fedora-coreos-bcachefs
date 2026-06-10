@@ -196,7 +196,7 @@ jobs:
             BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }}
             SIGNING_FINGERPRINT=${{ steps.signing.outputs.fingerprint }}
           secrets: |
-            module_signing_key=${{ secrets.MODULE_SIGNING_KEY }}
+            "module_signing_key=${{ secrets.MODULE_SIGNING_KEY }}"
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=Fedora CoreOS (${{ matrix.fcos_stream }}) with the bcachefs kernel module and bcachefs-tools
@@ -220,6 +220,9 @@ jobs:
             test -f /etc/modules-load.d/bcachefs.conf
             # zincati must be masked (symlink to /dev/null)
             test "$(readlink /etc/systemd/system/zincati.service)" = "/dev/null"
+            # bootc update timer enabled with our nightly-window drop-in
+            test -e /etc/systemd/system/timers.target.wants/bootc-fetch-apply-updates.timer
+            test -f /usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d/10-update-window.conf
             # when a signing key is configured, the shipped module must
             # actually carry a signature
             if [ "$SIGNING_ENABLED" = "true" ]; then
@@ -243,7 +246,7 @@ jobs:
             BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }}
             SIGNING_FINGERPRINT=${{ steps.signing.outputs.fingerprint }}
           secrets: |
-            module_signing_key=${{ secrets.MODULE_SIGNING_KEY }}
+            "module_signing_key=${{ secrets.MODULE_SIGNING_KEY }}"
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=Fedora CoreOS (${{ matrix.fcos_stream }}) with the bcachefs kernel module and bcachefs-tools
