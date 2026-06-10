@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+  schedule:
+    - cron: "15 3 * * *"
   workflow_dispatch:
     inputs:
       force:
@@ -20,8 +22,16 @@ on:
         default: ""
 
 permissions:
-  contents: write
+  contents: read
   packages: write
+  id-token: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
   build:
@@ -38,16 +48,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Get latest FCOS build metadata
-        id: fcos
+      - name: Ensure skopeo is available
         run: |
-          STREAM=${{ matrix.fcos_stream }}
-          ARCH=x86_64
-          URL="https://builds.coreos.fedoraproject.org/streams/${STREAM}.json"
-          LATEST=$(curl -s $URL | jq -r ".architectures.${ARCH}.artifacts.metal.formats.iso.disk.location")
-          VERSION=$(curl -s "$URL" | jq -r ".architectures.${ARCH}.artifacts.metal.release")
-          echo "fcos_version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "fcos_build=$LATEST" >> "$GITHUB_OUTPUT"
+          if ! command -v skopeo >/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+          fi
+
+      - name: Resolve base image digest
+        id: base
+        run: |
+          REF="quay.io/fedora/fedora-coreos:${{ matrix.fcos_stream }}"
+          DIGEST=$(skopeo inspect --format '{{.Digest}}' "docker://${REF}")
+          PINNED="quay.io/fedora/fedora-coreos@${DIGEST}"
+
+          # FCOS version for human-readable tags, read from the image
+          # itself (falls back to the streams metadata).
+          VERSION=$(skopeo inspect --format '{{index .Labels "org.opencontainers.image.version"}}' "docker://${PINNED}")
+          if [ -z "$VERSION" ] || [ "$VERSION" = "<no value>" ]; then
+            VERSION=$(curl -s "https://builds.coreos.fedoraproject.org/streams/${{ matrix.fcos_stream }}.json" \
+              | jq -r '.architectures.x86_64.artifacts.metal.release')
+          fi
+
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "pinned=${PINNED}" >> "$GITHUB_OUTPUT"
+          echo "fcos_version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve bcachefs ref
         id: bcachefs
@@ -58,24 +82,25 @@ jobs:
               REF="${{ inputs.bcachefs_ref }}"
               echo "Using provided ref: $REF"
             else
-              REF=$(gh api repos/koverstreet/bcachefs-tools/commits/master \
-                --jq '.sha')
+              REF=$(gh api repos/koverstreet/bcachefs-tools/commits/master --jq '.sha')
               echo "Using latest commit: $REF"
             fi
           else
-            REF=$(gh api repos/koverstreet/bcachefs-tools/tags \
-              --jq '[.[].name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+"))] | first')
+            # Tags from the API are creation-ordered, not version-ordered;
+            # sort numerically so a hotfix on an old series can't win.
+            REF=$(gh api 'repos/koverstreet/bcachefs-tools/tags?per_page=100' \
+              --jq '[.[].name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))]
+                    | sort_by(.[1:] | split(".") | map(tonumber)) | last')
             echo "Using latest tag: $REF"
           fi
 
-          if [ -z "$REF" ]; then
+          if [ -z "$REF" ] || [ "$REF" = "null" ]; then
             echo "Could not resolve a bcachefs ref, aborting"
             exit 1
           fi
 
-          SHORT_REF="${REF:0:12}"
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
-          echo "short_ref=$SHORT_REF" >> "$GITHUB_OUTPUT"
+          echo "short_ref=${REF:0:12}" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -94,74 +119,120 @@ jobs:
             exit 0
           fi
 
-          FILE=".last_build_${{ matrix.fcos_stream }}"
-          BUILD_NEEDED=false
+          CURRENT=$(skopeo inspect \
+            --format '{{index .Labels "io.fcos-bcachefs.base-digest"}},{{index .Labels "io.fcos-bcachefs.bcachefs-ref"}}' \
+            "docker://${IMAGE}:${{ matrix.fcos_stream }}" 2>/dev/null || echo "none")
+          WANTED="${{ steps.base.outputs.digest }},${{ steps.bcachefs.outputs.ref }}"
 
-          if [ ! -f "$FILE" ]; then
-            BUILD_NEEDED=true
+          echo "current: ${CURRENT}"
+          echo "wanted:  ${WANTED}"
+
+          if [ "$CURRENT" != "$WANTED" ]; then
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
           else
-            OLD_REF=$(cut -d',' -f1 "$FILE")
-            OLD_FCOS=$(cut -d',' -f2 "$FILE")
-            if [ "$OLD_REF" != "${{ steps.bcachefs.outputs.ref }}" ] || \
-               [ "$OLD_FCOS" != "${{ steps.fcos.outputs.fcos_build }}" ]; then
-              BUILD_NEEDED=true
-            fi
+            echo "build_needed=false" >> "$GITHUB_OUTPUT"
           fi
-
-          echo "build_needed=$BUILD_NEEDED" >> "$GITHUB_OUTPUT"
 
       - name: Resolve image tags
         id: tags
         if: ${{ steps.check.outputs.build_needed == 'true' }}
         run: |
-          BASE="ghcr.io/${{ github.repository }}"
           STREAM="${{ matrix.fcos_stream }}"
           REF="${{ steps.bcachefs.outputs.ref }}"
           SHORT_REF="${{ steps.bcachefs.outputs.short_ref }}"
-          FCOS="${{ steps.fcos.outputs.fcos_version }}"
+          FCOS="${{ steps.base.outputs.fcos_version }}"
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
              [ "${{ inputs.triggered_by }}" != "watcher" ]; then
             # True manual/git builds get isolated tags with git- prefix
-            echo "tags=${BASE}:git-${SHORT_REF}-${FCOS}-${STREAM}" >> "$GITHUB_OUTPUT"
+            TAGS="${IMAGE}:git-${SHORT_REF}-${FCOS}-${STREAM}"
           else
-            # Automated builds (push, watcher) get the full set of tags
-            echo "tags=${BASE}:${STREAM} ${BASE}:${REF}-${STREAM} ${BASE}:${REF}-${FCOS}-${STREAM}" >> "$GITHUB_OUTPUT"
+            TAGS=$(printf '%s\n%s\n%s' \
+              "${IMAGE}:${STREAM}" \
+              "${IMAGE}:${REF}-${STREAM}" \
+              "${IMAGE}:${REF}-${FCOS}-${STREAM}")
           fi
+
+          {
+            echo "tags<<EOF"
+            echo "$TAGS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        if: ${{ steps.check.outputs.build_needed == 'true' }}
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
         if: ${{ steps.check.outputs.build_needed == 'true' }}
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | \
-            docker login ghcr.io -u ${{ github.actor }} --password-stdin
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Docker image
+      - name: Build image
+        if: ${{ steps.check.outputs.build_needed == 'true' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            BASE_IMAGE=${{ steps.base.outputs.pinned }}
+            BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Fedora CoreOS (${{ matrix.fcos_stream }}) with the bcachefs kernel module and bcachefs-tools
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ steps.base.outputs.fcos_version }}
+            io.fcos-bcachefs.base-digest=${{ steps.base.outputs.digest }}
+            io.fcos-bcachefs.bcachefs-ref=${{ steps.bcachefs.outputs.ref }}
+          cache-from: type=gha,scope=${{ matrix.fcos_stream }}
+          cache-to: type=gha,scope=${{ matrix.fcos_stream }},mode=max
+
+      - name: Smoke test image
         if: ${{ steps.check.outputs.build_needed == 'true' }}
         run: |
-          TAG_ARGS=$(echo "${{ steps.tags.outputs.tags }}" | xargs -n1 printf -- '-t %s ')
-          docker build \
-            --build-arg FCOS_STREAM=${{ matrix.fcos_stream }} \
-            --build-arg BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }} \
-            $TAG_ARGS \
-            .
+          TAG=$(echo "${{ steps.tags.outputs.tags }}" | head -n1 | xargs)
+          docker run --rm "$TAG" bash -c '
+            set -eux
+            KVER=$(rpm -q kernel-core --queryformat "%{VERSION}-%{RELEASE}.%{ARCH}")
+            modinfo -k "$KVER" bcachefs
+            rpm -q bcachefs-tools
+            bcachefs version
+            test -f /etc/modules-load.d/bcachefs.conf
+            # zincati must be masked (symlink to /dev/null)
+            test "$(readlink /etc/systemd/system/zincati.service)" = "/dev/null"
+          '
 
-      - name: Push Docker image
+      - name: Push image
+        if: ${{ steps.check.outputs.build_needed == 'true' }}
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            BASE_IMAGE=${{ steps.base.outputs.pinned }}
+            BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Fedora CoreOS (${{ matrix.fcos_stream }}) with the bcachefs kernel module and bcachefs-tools
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ steps.base.outputs.fcos_version }}
+            io.fcos-bcachefs.base-digest=${{ steps.base.outputs.digest }}
+            io.fcos-bcachefs.bcachefs-ref=${{ steps.bcachefs.outputs.ref }}
+          cache-from: type=gha,scope=${{ matrix.fcos_stream }}
+
+      - name: Install cosign
+        if: ${{ steps.check.outputs.build_needed == 'true' }}
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image
         if: ${{ steps.check.outputs.build_needed == 'true' }}
         run: |
-          for TAG in ${{ steps.tags.outputs.tags }}; do
-            docker push "$TAG"
-          done
-
-      - name: Save last build state
-        if: >-
-          ${{ steps.check.outputs.build_needed == 'true' &&
-          (github.event_name != 'workflow_dispatch' ||
-          inputs.triggered_by == 'watcher') }}
-        run: |
-          FILE=".last_build_${{ matrix.fcos_stream }}"
-          echo "${{ steps.bcachefs.outputs.ref }},${{ steps.fcos.outputs.fcos_build }}" > "$FILE"
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add "$FILE"
-          git commit -m "Update last build for ${{ matrix.fcos_stream }}" || echo "No changes to commit"
-          git push origin main || echo "Push failed, probably no changes"
+          # All tags point at the same manifest; one signature on the
+          # digest covers them all.
+          cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
