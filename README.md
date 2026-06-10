@@ -1,33 +1,75 @@
 # Fedora CoreOS with Bcachefs
 
-This repository provides Fedora CoreOS images with the bcachefs kernel module and `bcachefs-tools`.
+Fedora CoreOS images with the bcachefs kernel module and `bcachefs-tools`.
+The module is prebuilt and signed. Images are rebuilt automatically when a new
+bcachefs-tools tag or Fedora CoreOS build is released.
 
-Images are rebuilt automatically when either:
-
-- A new bcachefs-tools tag is created
-- A new Fedora CoreOS build is released
-
----
-
-## Available Images
-
-| Stream  | Image                                          |
-| ------- | ---------------------------------------------- |
+| Stream  | Image                                            |
+| ------- | ------------------------------------------------ |
 | stable  | `ghcr.io/piewhat/fedora-coreos-bcachefs:stable`  |
 | testing | `ghcr.io/piewhat/fedora-coreos-bcachefs:testing` |
 
-You can also pull images pinned to a specific bcachefs release, with or without the FCOS version:
+## Quick start
+
+Rebase and reboot:
 
 ```
-ghcr.io/piewhat/fedora-coreos-bcachefs:<bcachefs-tag>-<stream>
-ghcr.io/piewhat/fedora-coreos-bcachefs:<bcachefs-tag>-<fcos-version>-<stream>
+sudo rpm-ostree rebase --bypass-driver --reboot \
+  ostree-unverified-registry:ghcr.io/piewhat/fedora-coreos-bcachefs:stable
 ```
 
----
+> `--bypass-driver` is only needed while Zincati is still running (stock FCOS).
 
-## Image signing
+If Secure Boot is enabled, enroll the module signing certificate once,
+then reboot and choose **Enroll MOK → Continue** in the blue MokManager
+screen:
 
-Images are signed with [cosign](https://docs.sigstore.dev/) using keyless GitHub OIDC signing. Verify any tag with:
+```
+sudo mokutil --import /etc/pki/fcos-bcachefs/MOK.der
+```
+
+Verify:
+
+```
+lsmod | grep bcachefs
+bcachefs version
+```
+
+## Automatic updates
+
+A bundled timer runs `rpm-ostree upgrade --reboot` daily at ~04:00 (with up
+to 30 minutes of randomized delay). Zincati is masked, as it can't update ostree container images.
+
+Adjust the schedule or behavior (persists across updates):
+
+```
+sudo systemctl edit rpm-ostreed-oci-update.timer
+```
+
+Opt out entirely and update manually with `sudo rpm-ostree upgrade`:
+
+```
+sudo systemctl disable --now rpm-ostreed-oci-update.timer
+```
+
+## Verified pulls (optional)
+
+Images are signed with a static cosign key. The image ships everything
+needed for verification — the public key, `registries.d` config, and a
+`policy.json` requiring a valid signature for this repository — so once
+you're running the image, one rebase enables fail-closed verification of
+every future pull:
+
+```
+sudo rpm-ostree rebase --reboot \
+  ostree-image-signed:docker://ghcr.io/piewhat/fedora-coreos-bcachefs:stable
+```
+
+A host with a locally-modified `/etc/containers/policy.json` keeps its own
+version; merge the `transports.docker` entry from this repo's
+`containers/policy.json` manually in that case.
+
+Images also carry a keyless GitHub-OIDC signature for provenance:
 
 ```
 cosign verify ghcr.io/piewhat/fedora-coreos-bcachefs:stable \
@@ -35,123 +77,21 @@ cosign verify ghcr.io/piewhat/fedora-coreos-bcachefs:stable \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-### Verified pulls (ostree-image-signed)
+## Tags
 
-Images are additionally signed with a static cosign key (`certs/cosign.pub`).
-The image ships everything needed for verification: the public key at
-`/etc/pki/containers/fcos-bcachefs.pub`, the `registries.d` config, and a
-`policy.json` that requires a valid signature for this repository (and
-changes nothing else). So enabling verification is just two rebases:
+Pinned to a bcachefs release, with or without the FCOS version:
 
 ```
-# from stock FCOS (zincati still running, hence --bypass-driver):
-sudo rpm-ostree rebase --bypass-driver --reboot \
-  ostree-unverified-registry:ghcr.io/piewhat/fedora-coreos-bcachefs:stable
-
-# after the reboot, flip the origin to the signed transport — the
-# verification config is now on disk, and the layers are already cached:
-sudo rpm-ostree rebase --reboot \
-  ostree-image-signed:docker://ghcr.io/piewhat/fedora-coreos-bcachefs:stable
+ghcr.io/piewhat/fedora-coreos-bcachefs:<bcachefs-tag>-<stream>
+ghcr.io/piewhat/fedora-coreos-bcachefs:<bcachefs-tag>-<fcos-version>-<stream>
 ```
 
-From then on every update pull fails closed unless the image carries a
-valid signature from this repository's key. Verify the state of a host
-with `rpm-ostree status` (the origin shows `ostree-image-signed:`).
+## Notes
 
-A host with locally-modified `/etc/containers/policy.json` keeps its own
-version (ostree three-way /etc merge); merge the `transports.docker` entry
-from this repo's `containers/policy.json` manually in that case.
-
-The keyless GitHub-OIDC signature shown above exists alongside the static
-key for provenance auditing.
-
----
-
-## Using the Image
-
-To switch your system to use one of these images:
-
-```
-sudo rpm-ostree rebase --bypass-driver --reboot \
-  ostree-unverified-registry:ghcr.io/piewhat/fedora-coreos-bcachefs:stable
-```
-
-> Replace `stable` with `testing` if you want the testing stream.
-> `--bypass-driver` is only needed while Zincati is still running (stock FCOS).
-
-After rebasing, reboot to apply the changes:
-
-```
-sudo systemctl reboot
-```
-
-Check that bcachefs is available:
-
-```
-lsmod | grep bcachefs
-bcachefs version
-```
-
----
-
-## Automatic updates
-
-Zincati follows Fedora's official update graph, which only knows official
-`quay.io/fedora/fedora-coreos` releases — on a custom image it could deploy
-an official digest over this one and silently drop the bcachefs layer.
-**Zincati is therefore masked in this image.**
-
-Updates are handled by a bundled systemd timer that runs
-`rpm-ostree upgrade --reboot` daily at ~04:00 (with up to 30 minutes of
-randomized delay). Layered packages are reapplied on every update. Adjust
-the schedule or behavior — these edits live in `/etc` and persist across
-updates:
-
-```
-sudo systemctl edit rpm-ostreed-oci-update.timer
-sudo systemctl edit rpm-ostreed-oci-update.service
-```
-
-To opt out of automatic updates entirely:
-
-```
-sudo systemctl disable --now rpm-ostreed-oci-update.timer
-```
-
-and update manually with `sudo rpm-ostree upgrade` whenever you choose.
-
----
-
-## Secure Boot
-
-The bcachefs module is signed at build time with this repository's own
-signing key (see `certs/`). Fedora's kernel lockdown policy under Secure
-Boot only loads modules whose signature chains to a key in the platform
-keyring — which includes Machine Owner Keys (MOK) that you enroll yourself.
-
-To use this image with Secure Boot enabled, enroll the certificate once:
-
-```
-sudo mokutil --import /etc/pki/fcos-bcachefs/MOK.der
-```
-
-Set a one-time password when prompted, reboot, and in the blue MokManager
-screen choose **Enroll MOK → Continue**, confirm, and enter that password.
-This is a one-time step; the enrollment persists across all future image
-updates.
-
-You can verify the module's signature with:
-
-```
-modinfo -F signer bcachefs
-```
-
-> **Trust note:** enrolling the MOK means trusting every kernel module
-> signed by this repository's key. If you'd rather not, you can build the
-> image yourself with your own key (see `certs/README.md`) — or disable
-> Secure Boot, or enroll your own MOK and sign the module locally.
-
----
+- Enrolling the MOK means trusting every kernel module signed by this
+  repository's key. Build the image with your own keys instead if you
+  prefer (see `certs/README.md`).
+- Verify the module signature with `modinfo -F signer bcachefs`.
 
 ## License
 
