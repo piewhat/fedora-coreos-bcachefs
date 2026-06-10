@@ -209,6 +209,8 @@ jobs:
             set -eux
             KVER=$(rpm -q kernel-core --queryformat "%{VERSION}-%{RELEASE}.%{ARCH}")
             modinfo -k "$KVER" bcachefs
+            VERMAGIC=$(modinfo -k "$KVER" -F vermagic bcachefs)
+            case "$VERMAGIC" in "$KVER "*) ;; *) echo "vermagic mismatch: $VERMAGIC != $KVER"; exit 1;; esac
             rpm -q bcachefs-tools
             bcachefs version
             test -f /etc/modules-load.d/bcachefs.conf
