@@ -124,9 +124,9 @@ RUN set -eux; \
     echo "bcachefs" > /etc/modules-load.d/bcachefs.conf; \
     systemctl mask zincati.service
 
-COPY systemd/10-update-window.conf \
-    /usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d/10-update-window.conf
-RUN systemctl enable bootc-fetch-apply-updates.timer
+COPY rpm-ostreed-oci-update.service /usr/lib/systemd/system/rpm-ostreed-oci-update.service
+COPY rpm-ostreed-oci-update.timer /usr/lib/systemd/system/rpm-ostreed-oci-update.timer
+RUN systemctl enable rpm-ostreed-oci-update.timer
 
 RUN bootc container lint || echo "bootc lint reported issues (non-fatal)"
 
