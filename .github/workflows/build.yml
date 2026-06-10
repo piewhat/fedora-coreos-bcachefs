@@ -159,6 +159,19 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Compute signing fingerprint
+        id: signing
+        run: |
+          if [ -n "$MODULE_SIGNING_KEY" ] && [ -f certs/MOK.der ]; then
+            echo "fingerprint=$(sha256sum certs/MOK.der | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "fingerprint=unsigned" >> "$GITHUB_OUTPUT"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          MODULE_SIGNING_KEY: ${{ secrets.MODULE_SIGNING_KEY }}
+
       - name: Set up Docker Buildx
         if: ${{ steps.check.outputs.build_needed == 'true' }}
         uses: docker/setup-buildx-action@v3
@@ -181,6 +194,9 @@ jobs:
           build-args: |
             BASE_IMAGE=${{ steps.base.outputs.pinned }}
             BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }}
+            SIGNING_FINGERPRINT=${{ steps.signing.outputs.fingerprint }}
+          secrets: |
+            module_signing_key=${{ secrets.MODULE_SIGNING_KEY }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=Fedora CoreOS (${{ matrix.fcos_stream }}) with the bcachefs kernel module and bcachefs-tools
@@ -195,7 +211,7 @@ jobs:
         if: ${{ steps.check.outputs.build_needed == 'true' }}
         run: |
           TAG=$(echo "${{ steps.tags.outputs.tags }}" | head -n1 | xargs)
-          docker run --rm "$TAG" bash -c '
+          docker run --rm -e SIGNING_ENABLED="${{ steps.signing.outputs.enabled }}" "$TAG" bash -c '
             set -eux
             KVER=$(rpm -q kernel-core --queryformat "%{VERSION}-%{RELEASE}.%{ARCH}")
             modinfo -k "$KVER" bcachefs
@@ -204,6 +220,14 @@ jobs:
             test -f /etc/modules-load.d/bcachefs.conf
             # zincati must be masked (symlink to /dev/null)
             test "$(readlink /etc/systemd/system/zincati.service)" = "/dev/null"
+            # when a signing key is configured, the shipped module must
+            # actually carry a signature
+            if [ "$SIGNING_ENABLED" = "true" ]; then
+              SIGNER=$(modinfo -k "$KVER" -F signer bcachefs)
+              echo "module signer: ${SIGNER}"
+              test -n "$SIGNER"
+              test -f /etc/pki/fcos-bcachefs/MOK.der
+            fi
           '
 
       - name: Push image
@@ -217,6 +241,9 @@ jobs:
           build-args: |
             BASE_IMAGE=${{ steps.base.outputs.pinned }}
             BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }}
+            SIGNING_FINGERPRINT=${{ steps.signing.outputs.fingerprint }}
+          secrets: |
+            module_signing_key=${{ secrets.MODULE_SIGNING_KEY }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=Fedora CoreOS (${{ matrix.fcos_stream }}) with the bcachefs kernel module and bcachefs-tools
