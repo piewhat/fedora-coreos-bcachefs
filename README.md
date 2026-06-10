@@ -1,7 +1,8 @@
 # Fedora CoreOS with Bcachefs
 
 Fedora CoreOS images with the bcachefs kernel module and `bcachefs-tools`.
-The module is prebuilt and signed. Images are rebuilt automatically when a new
+The module is prebuilt and signed, package layering with `rpm-ostree install`
+works like stock FCOS. Images are rebuilt automatically when a new
 bcachefs-tools tag or Fedora CoreOS build is released.
 
 | Stream  | Image                                            |
@@ -37,19 +38,23 @@ bcachefs version
 
 ## Automatic updates
 
-A bundled timer runs `rpm-ostree upgrade --reboot` daily at ~04:00 (with up
-to 30 minutes of randomized delay). Zincati is masked, as it can't update ostree container images.
+rpm-ostree's built-in automatic updates are enabled
+(`AutomaticUpdatePolicy=apply`): the stock `rpm-ostreed-automatic.timer`
+checks for a new image daily at ~04:00 (with up to 30 minutes of randomized
+delay) and reboots only when an update was staged. Layered packages are
+reapplied on every update. Zincati is masked, as it can't update ostree
+container images.
 
-Adjust the schedule or behavior (persists across updates):
+Adjust the schedule (persists across updates):
 
 ```
-sudo systemctl edit rpm-ostreed-oci-update.timer
+sudo systemctl edit rpm-ostreed-automatic.timer
 ```
 
 Opt out entirely and update manually with `sudo rpm-ostree upgrade`:
 
 ```
-sudo systemctl disable --now rpm-ostreed-oci-update.timer
+sudo systemctl disable --now rpm-ostreed-automatic.timer
 ```
 
 ## Verified pulls (optional)
