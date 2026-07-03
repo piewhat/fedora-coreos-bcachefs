@@ -29,6 +29,7 @@ RUN dnf install -y \
     systemd-devel \
     clang-devel \
     llvm-devel \
+    bindgen-cli \
     rust \
     cargo \
     libattr-devel \
