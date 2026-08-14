@@ -16,6 +16,10 @@ on:
         description: "Build a specific bcachefs ref (tag or commit SHA) as an isolated git- tagged image. Leave empty for a normal build of the latest tag."
         required: false
         default: ""
+      driver_ref:
+        description: "bcachefs-storage-driver ref to build podman against. Leave empty for main."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -97,10 +101,45 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve podman driver ref
+        id: driver
+        run: |
+          REF="${{ inputs.driver_ref }}"
+          : "${REF:=main}"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve build mode
+        id: mode
+        run: |
+          BRANCH="${{ github.ref_name }}"
+          ISOLATED=false
+          LABEL=""
+
+          if [ -n "${{ inputs.bcachefs_ref }}" ]; then
+            ISOLATED=true
+            LABEL="${{ steps.bcachefs.outputs.short_ref }}"
+            echo "isolated: explicit bcachefs_ref given"
+          elif [ "$BRANCH" != "main" ]; then
+            ISOLATED=true
+            SAFE_BRANCH=$(echo "$BRANCH" | tr -c 'a-zA-Z0-9._-' '-')
+            LABEL="branch-${SAFE_BRANCH}"
+            echo "isolated: running from non-main branch ($BRANCH)"
+          elif [ -n "${{ inputs.driver_ref }}" ]; then
+            ISOLATED=true
+            SAFE_DRIVER=$(echo "${{ inputs.driver_ref }}" | cut -c1-12 | tr -c 'a-zA-Z0-9._-' '-')
+            LABEL="driver-${SAFE_DRIVER}"
+            echo "isolated: explicit driver_ref given"
+          else
+            echo "normal build: main branch, no explicit refs"
+          fi
+
+          echo "isolated=$ISOLATED" >> "$GITHUB_OUTPUT"
+          echo "label=$LABEL" >> "$GITHUB_OUTPUT"
+
       - name: Check if rebuild is needed
         id: check
         run: |
-          if [ -n "${{ inputs.bcachefs_ref }}" ]; then
+          if [ "${{ steps.mode.outputs.isolated }}" = "true" ]; then
             echo "build_needed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -113,7 +152,7 @@ jobs:
           CURRENT=""
           for i in 1 2 3; do
             CURRENT=$(skopeo inspect \
-              --format '{{index .Labels "io.fcos-bcachefs.base-digest"}},{{index .Labels "io.fcos-bcachefs.bcachefs-ref"}}' \
+              --format '{{index .Labels "io.fcos-bcachefs.base-digest"}},{{index .Labels "io.fcos-bcachefs.bcachefs-ref"}},{{index .Labels "io.fcos-bcachefs.driver-ref"}}' \
               "docker://${IMAGE}:${{ matrix.fcos_stream }}" 2>&1) && break
             if echo "$CURRENT" | grep -q "manifest unknown"; then
               CURRENT="none"
@@ -123,7 +162,7 @@ jobs:
             CURRENT="none"
             sleep $((i * 15))
           done
-          WANTED="${{ steps.base.outputs.digest }},${{ steps.bcachefs.outputs.ref }}"
+          WANTED="${{ steps.base.outputs.digest }},${{ steps.bcachefs.outputs.ref }},${{ steps.driver.outputs.ref }}"
 
           echo "current: ${CURRENT}"
           echo "wanted:  ${WANTED}"
@@ -143,8 +182,8 @@ jobs:
           SHORT_REF="${{ steps.bcachefs.outputs.short_ref }}"
           FCOS="${{ steps.base.outputs.fcos_version }}"
 
-          if [ -n "${{ inputs.bcachefs_ref }}" ]; then
-            TAGS="${IMAGE}:git-${SHORT_REF}-${FCOS}-${STREAM}"
+          if [ "${{ steps.mode.outputs.isolated }}" = "true" ]; then
+            TAGS="${IMAGE}:git-${{ steps.mode.outputs.label }}-${FCOS}-${STREAM}"
           else
             TAGS=$(printf '%s\n%s\n%s' \
               "${IMAGE}:${STREAM}" \
@@ -195,6 +234,7 @@ jobs:
             BASE_IMAGE=${{ steps.base.outputs.pinned }}
             BUILDER_IMAGE=${{ steps.base.outputs.builder }}
             BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }}
+            BCACHEFS_DRIVER_REF=${{ steps.driver.outputs.ref }}
             SIGNING_FINGERPRINT=${{ steps.signing.outputs.fingerprint }}
           secrets: |
             "module_signing_key=${{ secrets.MODULE_SIGNING_KEY }}"
@@ -205,6 +245,7 @@ jobs:
             org.opencontainers.image.version=${{ steps.base.outputs.fcos_version }}
             io.fcos-bcachefs.base-digest=${{ steps.base.outputs.digest }}
             io.fcos-bcachefs.bcachefs-ref=${{ steps.bcachefs.outputs.ref }}
+            io.fcos-bcachefs.driver-ref=${{ steps.driver.outputs.ref }}
           cache-from: type=gha,scope=${{ matrix.fcos_stream }}
           cache-to: type=gha,scope=${{ matrix.fcos_stream }},mode=max
 
@@ -232,6 +273,16 @@ jobs:
               test -n "$SIGNER"
               test -f /etc/pki/fcos-bcachefs/MOK.der
             fi
+            OUT=$(podman --storage-driver bcachefs --root /tmp/pmtest info 2>&1 || true)
+            echo "$OUT"
+            echo "$OUT" | grep -qi "not on a bcachefs filesystem" || {
+              echo "bcachefs storage driver not registered in podman"; exit 1;
+            }
+            if [ -f /etc/containers/storage.conf ]; then
+              if grep -q "^driver = \"bcachefs\"" /etc/containers/storage.conf; then
+                echo "storage.conf defaults to bcachefs — must ship inert"; exit 1;
+              fi
+            fi
           '
 
       - name: Push image
@@ -247,6 +298,7 @@ jobs:
             BASE_IMAGE=${{ steps.base.outputs.pinned }}
             BUILDER_IMAGE=${{ steps.base.outputs.builder }}
             BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }}
+            BCACHEFS_DRIVER_REF=${{ steps.driver.outputs.ref }}
             SIGNING_FINGERPRINT=${{ steps.signing.outputs.fingerprint }}
           secrets: |
             "module_signing_key=${{ secrets.MODULE_SIGNING_KEY }}"
@@ -257,6 +309,7 @@ jobs:
             org.opencontainers.image.version=${{ steps.base.outputs.fcos_version }}
             io.fcos-bcachefs.base-digest=${{ steps.base.outputs.digest }}
             io.fcos-bcachefs.bcachefs-ref=${{ steps.bcachefs.outputs.ref }}
+            io.fcos-bcachefs.driver-ref=${{ steps.driver.outputs.ref }}
           cache-from: type=gha,scope=${{ matrix.fcos_stream }}
 
       - name: Install cosign
