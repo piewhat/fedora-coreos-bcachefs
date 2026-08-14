@@ -5,7 +5,8 @@ ARG BUILDER_IMAGE=quay.io/fedora/fedora:latest
 FROM ${BASE_IMAGE} AS kinfo
 RUN rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}' > /kver && \
     rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}' > /kvr && \
-    rpm -q kernel-core --queryformat '%{ARCH}' > /karch
+    rpm -q kernel-core --queryformat '%{ARCH}' > /karch && \
+    rpm -q podman --queryformat '%{VERSION}-%{RELEASE}' > /pnvr
 
 FROM ${BUILDER_IMAGE} AS tools
 ARG BCACHEFS_REF
@@ -134,6 +135,54 @@ RUN set -eux; \
     mkdir -p /out/rpms; \
     cp /root/rpmbuild/RPMS/*/kmod-bcachefs-*.rpm /out/rpms/
 
+FROM ${BUILDER_IMAGE} AS podman-driver
+ARG BCACHEFS_DRIVER_REF=main
+COPY --from=kinfo /pnvr /karch /
+RUN dnf install -y 'dnf-command(download)' rpmdevtools rpm-build git golang jq koji
+RUN rpmdev-setuptree
+WORKDIR /build
+RUN git clone https://github.com/ticpu/bcachefs-storage-driver.git && \
+    cd bcachefs-storage-driver && \
+    git checkout "$BCACHEFS_DRIVER_REF"
+RUN set -eux; \
+    PNVR=$(cat /pnvr); \
+    dnf download --source "podman-${PNVR}" -y --downloaddir /build || \
+    koji download-build --noprogress --arch src "podman-${PNVR}"; \
+    rpm -i /build/podman-*.src.rpm
+RUN dnf builddep -y /root/rpmbuild/SPECS/podman.spec
+# Unpack + Fedora's own patches, exposing the vendored source tree. Do not
+# run -bb yet: that would re-run %prep and stomp the driver patch applied
+# below onto a fresh extraction.
+RUN cd /root/rpmbuild && rpmbuild -bp SPECS/podman.spec
+RUN set -eux; \
+    SRC_DIR=$(find /root/rpmbuild/BUILD -maxdepth 1 -type d -name 'podman-*' | head -n1); \
+    test -n "$SRC_DIR"; \
+    STORAGE_DIR=$(find "$SRC_DIR" -maxdepth 5 -type d -path '*/vendor/go.podman.io/storage' 2>/dev/null | head -n1); \
+    MODULE="go.podman.io/storage"; \
+    if [ -z "$STORAGE_DIR" ]; then \
+        STORAGE_DIR=$(find "$SRC_DIR" -maxdepth 5 -type d -path '*/vendor/github.com/containers/storage' 2>/dev/null | head -n1); \
+        MODULE="github.com/containers/storage"; \
+    fi; \
+    test -n "$STORAGE_DIR"; \
+    echo "$SRC_DIR" > /src_dir; \
+    echo "$STORAGE_DIR" > /storage_dir; \
+    echo "$MODULE" > /storage_module; \
+    echo "podman source: $SRC_DIR"; \
+    echo "storage vendor: $STORAGE_DIR ($MODULE)"
+RUN bash /build/bcachefs-storage-driver/packaging/apply-driver.sh \
+    --module "$(cat /storage_module)" \
+    "$(cat /storage_dir)" \
+    /build/bcachefs-storage-driver/driver
+# Build from the already-patched BUILD tree via the real spec (--noprep
+# skips re-extraction), so the resulting RPM set matches stock podman's
+# file manifest, deps, and scriptlets exactly — only the vendored storage
+# source underneath differs.
+RUN cd /root/rpmbuild && rpmbuild -bb --noprep SPECS/podman.spec
+RUN mkdir -p /out/rpms && \
+    find /root/rpmbuild/RPMS -name '*.rpm' \
+        ! -name '*-debuginfo-*' ! -name '*-debugsource-*' \
+        -exec cp {} /out/rpms/ \;
+
 FROM ${BASE_IMAGE}
 RUN --mount=type=bind,from=tools,source=/root/rpmbuild/RPMS,target=/tools-rpms \
     --mount=type=bind,from=module,source=/out/rpms,target=/kmod-rpms \
@@ -145,6 +194,9 @@ RUN set -eux; \
     KVER=$(rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}'); \
     depmod -a "${KVER}"; \
     modinfo -k "${KVER}" bcachefs
+
+RUN --mount=type=bind,from=podman-driver,source=/out/rpms,target=/podman-rpms \
+    rpm-ostree override replace -y --experimental /podman-rpms/*.rpm
 
 COPY certs/MOK.der /etc/pki/fcos-bcachefs/MOK.der
 COPY certs/cosign.pub /etc/pki/containers/fcos-bcachefs.pub
