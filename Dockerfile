@@ -167,8 +167,10 @@ RUN set -eux; \
     echo "$SRC_DIR" > /src_dir; \
     echo "$STORAGE_DIR" > /storage_dir; \
     echo "$MODULE" > /storage_module; \
+    echo "$STORAGE_DIR" | sed -E 's#(.*/vendor)/.*#\1/modules.txt#' > /modules_txt; \
     echo "podman source: $SRC_DIR"; \
-    echo "storage vendor: $STORAGE_DIR ($MODULE)"
+    echo "storage vendor: $STORAGE_DIR ($MODULE)"; \
+    echo "modules.txt: $(cat /modules_txt)"
 RUN bash /build/bcachefs-storage-driver/packaging/apply-driver.sh \
     --module "$(cat /storage_module)" \
     "$(cat /storage_dir)" \
