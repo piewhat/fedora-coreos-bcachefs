@@ -215,8 +215,16 @@ RUN set -eux; \
 # as "Request to reinstall exact base package versions". Redefining %dist
 # appends a suffix to every subpackage's Release, so the patched build has
 # a distinct (and rpm-comparison-wise newer) NVR without editing the spec.
+# `--define "dist %{?dist}.bcachefs1"` is self-referential: the new dist
+# body is stored as literal text "%{?dist}.bcachefs1", and %{?dist} inside
+# it is resolved at USE time — by which point %dist means the new
+# definition itself, recursing forever. Fix: resolve the current dist to a
+# plain string in the shell first (rpm --eval fully expands it, leaving no
+# %{...} token behind), then pass that literal value — nothing left to
+# self-reference.
 RUN cd /root/rpmbuild && \
-    rpmbuild -bb --noprep --define "dist %{?dist}.bcachefs1" SPECS/podman.spec
+    DIST=$(rpm --eval '%{?dist}') && \
+    rpmbuild -bb --noprep --define "dist ${DIST}.bcachefs1" SPECS/podman.spec
 # podman-docker provides the docker/moby-engine virtual names, and
 # intentionally conflicts with moby-engine — which FCOS ships by default.
 # It was never part of the base install; excluding it here means
