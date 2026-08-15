@@ -228,7 +228,7 @@ RUN set -eux; \
     modinfo -k "${KVER}" bcachefs
 
 RUN --mount=type=bind,from=podman-driver,source=/out/rpms,target=/podman-rpms \
-    rpm-ostree override replace -y --experimental /podman-rpms/*.rpm
+    rpm-ostree override replace --experimental /podman-rpms/*.rpm
 
 COPY certs/MOK.der /etc/pki/fcos-bcachefs/MOK.der
 COPY certs/cosign.pub /etc/pki/containers/fcos-bcachefs.pub
