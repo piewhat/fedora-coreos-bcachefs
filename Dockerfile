@@ -143,7 +143,8 @@ RUN rpmdev-setuptree
 WORKDIR /build
 RUN git clone https://github.com/ticpu/bcachefs-storage-driver.git && \
     cd bcachefs-storage-driver && \
-    git checkout "$BCACHEFS_DRIVER_REF"
+    git checkout "$BCACHEFS_DRIVER_REF" && \
+    git rev-parse --short=8 HEAD > /driver_sha
 RUN set -eux; \
     PNVR=$(cat /pnvr); \
     dnf download --source "podman-${PNVR}" -y --downloaddir /build || \
@@ -215,16 +216,26 @@ RUN set -eux; \
 # as "Request to reinstall exact base package versions". Redefining %dist
 # appends a suffix to every subpackage's Release, so the patched build has
 # a distinct (and rpm-comparison-wise newer) NVR without editing the spec.
-# `--define "dist %{?dist}.bcachefs1"` is self-referential: the new dist
-# body is stored as literal text "%{?dist}.bcachefs1", and %{?dist} inside
-# it is resolved at USE time — by which point %dist means the new
-# definition itself, recursing forever. Fix: resolve the current dist to a
-# plain string in the shell first (rpm --eval fully expands it, leaving no
-# %{...} token behind), then pass that literal value — nothing left to
-# self-reference.
+#
+# The suffix is tied to the driver repo's resolved commit SHA (the
+# standard `.git<shortsha>` convention Fedora uses for snapshot/pre-release
+# builds), not a static string — a static suffix would mean two builds
+# with different driver content but the same podman NVR collide with the
+# exact same "exact base package versions" error, since rpm-ostree can't
+# tell they differ. Keying off the actual commit means the NVR changes
+# whenever the patched content does, even when BCACHEFS_DRIVER_REF is a
+# moving target like "main".
+#
+# `--define "dist %{?dist}.git<sha>"` would be self-referential: the new
+# dist body is stored as literal text containing "%{?dist}", which is
+# resolved at USE time — by which point %dist means the new definition
+# itself, recursing forever. Fix: resolve the current dist to a plain
+# string in the shell first (rpm --eval fully expands it, leaving no
+# %{...} token behind), then pass that literal value.
 RUN cd /root/rpmbuild && \
     DIST=$(rpm --eval '%{?dist}') && \
-    rpmbuild -bb --noprep --define "dist ${DIST}.bcachefs1" SPECS/podman.spec
+    DRIVER_SHA=$(cat /driver_sha) && \
+    rpmbuild -bb --noprep --define "dist ${DIST}.git${DRIVER_SHA}" SPECS/podman.spec
 # podman-docker provides the docker/moby-engine virtual names, and
 # intentionally conflicts with moby-engine — which FCOS ships by default.
 # It was never part of the base install; excluding it here means
