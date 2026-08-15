@@ -1,266 +1,334 @@
-# syntax=docker/dockerfile:1.7
-ARG BASE_IMAGE=quay.io/fedora/fedora-coreos:stable
-ARG BUILDER_IMAGE=quay.io/fedora/fedora:latest
+name: Build FCOS bcachefs images
 
-FROM ${BASE_IMAGE} AS kinfo
-RUN rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}' > /kver && \
-    rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}' > /kvr && \
-    rpm -q kernel-core --queryformat '%{ARCH}' > /karch && \
-    rpm -q podman --queryformat '%{VERSION}-%{RELEASE}' > /pnvr
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "15 3 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force rebuild (ignore FCOS + bcachefs checks)"
+        required: false
+        default: "false"
+      bcachefs_ref:
+        description: "Build a specific bcachefs ref (tag or commit SHA) as an isolated git- tagged image. Leave empty for a normal build of the latest tag."
+        required: false
+        default: ""
+      driver_ref:
+        description: "bcachefs-storage-driver ref to build podman against. Leave empty for main."
+        required: false
+        default: ""
 
-FROM ${BUILDER_IMAGE} AS tools
-ARG BCACHEFS_REF
-RUN dnf install -y \
-    rpm-build \
-    jq \
-    'pkgconfig(udev)' \
-    @c-development \
-    git \
-    libaio-devel \
-    libsodium-devel \
-    libblkid-devel \
-    libzstd-devel \
-    zlib-devel \
-    userspace-rcu-devel \
-    lz4-devel \
-    libuuid-devel \
-    valgrind-devel \
-    keyutils-libs-devel \
-    findutils \
-    systemd-devel \
-    clang-devel \
-    llvm-devel \
-    bindgen-cli \
-    rust \
-    cargo \
-    libattr-devel \
-    libunwind-devel
-ENV RPM_TOPDIR=/root/rpmbuild \
-    RPM_BUILD_NOSOURCEDEBUG=1
-RUN mkdir -p ${RPM_TOPDIR}/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS} /build
-WORKDIR /build
-RUN git clone https://github.com/koverstreet/bcachefs-tools.git && \
-    cd bcachefs-tools && \
-    git checkout "$BCACHEFS_REF"
-WORKDIR /build/bcachefs-tools
-RUN make rpm -j"$(nproc)"
+permissions:
+  contents: read
+  packages: write
+  id-token: write
 
-FROM ${BUILDER_IMAGE} AS module
-COPY --from=kinfo /kver /kvr /karch /
-RUN set -eux; \
-    dnf install -y fedora-repos-archive dkms rpm-build kmod openssl xz zstd; \
-    if ! dnf install -y \
-        "kernel-core-$(cat /kver)" \
-        "kernel-modules-core-$(cat /kver)" \
-        "kernel-devel-$(cat /kver)"; then \
-        dnf install -y koji; \
-        mkdir /koji; \
-        cd /koji; \
-        koji download-build --noprogress --arch "$(cat /karch)" "kernel-$(cat /kvr)"; \
-        dnf install -y \
-            ./kernel-core-*.rpm \
-            ./kernel-modules-core-*.rpm \
-            ./kernel-devel-*.rpm; \
-        cd /; \
-        rm -rf /koji; \
-    fi
-RUN --mount=type=bind,from=tools,source=/root/rpmbuild/RPMS,target=/rpms \
-    set -eux; \
-    KVER=$(cat /kver); \
-    rpm -i --noscripts --nodeps /rpms/noarch/dkms-bcachefs-*.rpm; \
-    SRC=$(ls -d /usr/src/bcachefs-*); \
-    PACKAGE_NAME=$(sed -n 's/^PACKAGE_NAME="\?\([^"]*\)"\?.*/\1/p' "${SRC}/dkms.conf"); \
-    PACKAGE_VERSION=$(sed -n 's/^PACKAGE_VERSION="\?\([^"]*\)"\?.*/\1/p' "${SRC}/dkms.conf"); \
-    : "${PACKAGE_NAME:=bcachefs}"; \
-    : "${PACKAGE_VERSION:=$(basename "${SRC}" | cut -d- -f2-)}"; \
-    dkms install "${PACKAGE_NAME}/${PACKAGE_VERSION}" -k "${KVER}" --force; \
-    echo "${PACKAGE_VERSION}" > /bver; \
-    mkdir -p /out; \
-    KO=$(find "/lib/modules/${KVER}" \( -path '*/extra/*' -o -path '*/updates/*' \) -name 'bcachefs.ko*' | head -n1); \
-    test -n "$KO"; \
-    cp "$KO" /out/; \
-    cd /out; \
-    case "$(basename "$KO")" in \
-        *.ko.xz)  xz -d bcachefs.ko.xz;; \
-        *.ko.zst) zstd -d --rm -q bcachefs.ko.zst;; \
-    esac; \
-    test -f /out/bcachefs.ko
-ARG SIGNING_FINGERPRINT=""
-COPY certs/MOK.der /MOK.der
-RUN --mount=type=secret,id=module_signing_key \
-    set -eux; \
-    echo "signing setup: ${SIGNING_FINGERPRINT}"; \
-    KVER=$(cat /kver); \
-    if [ -s /run/secrets/module_signing_key ]; then \
-        "/usr/src/kernels/${KVER}/scripts/sign-file" sha256 \
-            /run/secrets/module_signing_key /MOK.der /out/bcachefs.ko; \
-        modinfo -F signer /out/bcachefs.ko; \
-    else \
-        echo "WARNING: no module signing key provided, shipping unsigned module"; \
-    fi; \
-    xz --check=crc32 --lzma2=dict=1MiB /out/bcachefs.ko; \
-    xz -lv /out/bcachefs.ko.xz | grep -q "CRC32"
-RUN set -eux; \
-    KVER=$(cat /kver); \
-    BVER=$(tr '-' '.' < /bver); \
-    KREL=$(echo "${KVER}" | tr '-' '_'); \
-    mkdir -p /root/rpmbuild/{SPECS,SOURCES,RPMS}; \
-    cp /out/bcachefs.ko.xz /root/rpmbuild/SOURCES/; \
-    { \
-    echo "Name: kmod-bcachefs"; \
-    echo "Version: ${BVER}"; \
-    echo "Release: 1.${KREL}"; \
-    echo "Summary: Prebuilt bcachefs kernel module for kernel ${KVER}"; \
-    echo "License: GPL-2.0-only"; \
-    echo "Source0: bcachefs.ko.xz"; \
-    echo "BuildArch: $(cat /karch)"; \
-    echo "Requires: kernel-uname-r = ${KVER}"; \
-    echo ""; \
-    echo "%description"; \
-    echo "bcachefs ${BVER} kernel module built for kernel ${KVER}."; \
-    echo ""; \
-    echo "%install"; \
-    echo "install -D -m 0644 %{SOURCE0} %{buildroot}/usr/lib/modules/${KVER}/extra/bcachefs.ko.xz"; \
-    echo "install -d %{buildroot}/usr/lib/modules-load.d"; \
-    echo "echo bcachefs > %{buildroot}/usr/lib/modules-load.d/bcachefs.conf"; \
-    echo ""; \
-    echo "%post"; \
-    echo "depmod -a ${KVER} || :"; \
-    echo ""; \
-    echo "%files"; \
-    echo "/usr/lib/modules/${KVER}/extra/bcachefs.ko.xz"; \
-    echo "/usr/lib/modules-load.d/bcachefs.conf"; \
-    } > /root/rpmbuild/SPECS/kmod-bcachefs.spec; \
-    rpmbuild -bb /root/rpmbuild/SPECS/kmod-bcachefs.spec; \
-    mkdir -p /out/rpms; \
-    cp /root/rpmbuild/RPMS/*/kmod-bcachefs-*.rpm /out/rpms/
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
 
-FROM ${BUILDER_IMAGE} AS podman-driver
-ARG BCACHEFS_DRIVER_REF=main
-COPY --from=kinfo /pnvr /karch /
-RUN dnf install -y 'dnf-command(download)' rpmdevtools rpm-build git golang jq koji
-RUN rpmdev-setuptree
-WORKDIR /build
-RUN git clone https://github.com/ticpu/bcachefs-storage-driver.git && \
-    cd bcachefs-storage-driver && \
-    git checkout "$BCACHEFS_DRIVER_REF"
-RUN set -eux; \
-    PNVR=$(cat /pnvr); \
-    dnf download --source "podman-${PNVR}" -y --downloaddir /build || \
-    koji download-build --noprogress --arch src "podman-${PNVR}"; \
-    rpm -i /build/podman-*.src.rpm
-RUN dnf builddep -y /root/rpmbuild/SPECS/podman.spec
-# Unpack + Fedora's own patches, exposing the vendored source tree. Do not
-# run -bb yet: that would re-run %prep and stomp the driver patch applied
-# below onto a fresh extraction.
-RUN cd /root/rpmbuild && rpmbuild -bp SPECS/podman.spec
-RUN set -eux; \
-    SRC_DIR=$(find /root/rpmbuild/BUILD -maxdepth 1 -type d -name 'podman-*' | head -n1); \
-    test -n "$SRC_DIR"; \
-    STORAGE_DIR=$(find "$SRC_DIR" -maxdepth 5 -type d -path '*/vendor/go.podman.io/storage' 2>/dev/null | head -n1); \
-    MODULE="go.podman.io/storage"; \
-    if [ -z "$STORAGE_DIR" ]; then \
-        STORAGE_DIR=$(find "$SRC_DIR" -maxdepth 5 -type d -path '*/vendor/github.com/containers/storage' 2>/dev/null | head -n1); \
-        MODULE="github.com/containers/storage"; \
-    fi; \
-    test -n "$STORAGE_DIR"; \
-    echo "$SRC_DIR" > /src_dir; \
-    echo "$STORAGE_DIR" > /storage_dir; \
-    echo "$MODULE" > /storage_module; \
-    echo "$STORAGE_DIR" | sed -E 's#(.*/vendor)/.*#\1/modules.txt#' > /modules_txt; \
-    echo "podman source: $SRC_DIR"; \
-    echo "storage vendor: $STORAGE_DIR ($MODULE)"; \
-    echo "modules.txt: $(cat /modules_txt)"
-RUN bash /build/bcachefs-storage-driver/packaging/apply-driver.sh \
-    --module "$(cat /storage_module)" \
-    "$(cat /storage_dir)" \
-    /build/bcachefs-storage-driver/driver
-# apply-driver.sh drops drivers/bcachefs/ into the vendor tree as a new
-# package directory, but `go build -mod=vendor` resolves imports against
-# vendor/modules.txt, not the filesystem — a new package path absent from
-# that manifest is refused ("ignoring package ... missing from
-# vendor/modules.txt"). Editing existing vendored files (driver_linux.go,
-# driver.go, appending register_bcachefs.go into the already-vendored
-# drivers/register package) doesn't need this; only the brand-new
-# drivers/bcachefs package path does. Insert one line into the storage
-# module's block, anchored right after its "## explicit" marker — any
-# line within the block works for Go's parser, this anchor is just always
-# present and easy to find.
-RUN set -eux; \
-    MOD="$(cat /storage_module)"; \
-    PKG="${MOD}/drivers/bcachefs"; \
-    MODULES_TXT="$(cat /modules_txt)"; \
-    test -f "$MODULES_TXT"; \
-    if ! grep -qxF "$PKG" "$MODULES_TXT"; then \
-        awk -v modhdr="# ${MOD} " -v pkg="$PKG" ' \
-            { print } \
-            index($0, modhdr) == 1 { inblock=1; next } \
-            /^# / && index($0, modhdr) != 1 { inblock=0 } \
-            inblock && index($0, "## explicit") == 1 && !done { print pkg; done=1 } \
-        ' "$MODULES_TXT" > "$MODULES_TXT.new"; \
-        mv "$MODULES_TXT.new" "$MODULES_TXT"; \
-    fi; \
-    grep -qxF "$PKG" "$MODULES_TXT" || { \
-        echo "FATAL: failed to register $PKG in $MODULES_TXT — module header anchor may not match"; \
-        exit 1; \
-    }; \
-    echo "registered in modules.txt: $PKG"
-# Build from the already-patched BUILD tree via the real spec (--noprep
-# skips re-extraction), so the resulting RPM set matches stock podman's
-# file manifest, deps, and scriptlets exactly — only the vendored storage
-# source underneath differs.
-# `override replace` compares NVRA only, not file contents — an RPM built
-# from Fedora's own unmodified spec at the base image's exact NVR is
-# indistinguishable to it from what's already installed, and gets rejected
-# as "Request to reinstall exact base package versions". Redefining %dist
-# appends a suffix to every subpackage's Release, so the patched build has
-# a distinct (and rpm-comparison-wise newer) NVR without editing the spec.
-# `--define "dist %{?dist}.bcachefs1"` is self-referential: the new dist
-# body is stored as literal text "%{?dist}.bcachefs1", and %{?dist} inside
-# it is resolved at USE time — by which point %dist means the new
-# definition itself, recursing forever. Fix: resolve the current dist to a
-# plain string in the shell first (rpm --eval fully expands it, leaving no
-# %{...} token behind), then pass that literal value — nothing left to
-# self-reference.
-RUN cd /root/rpmbuild && \
-    DIST=$(rpm --eval '%{?dist}') && \
-    rpmbuild -bb --noprep --define "dist ${DIST}.bcachefs1" SPECS/podman.spec
-# podman-docker provides the docker/moby-engine virtual names, and
-# intentionally conflicts with moby-engine — which FCOS ships by default.
-# It was never part of the base install; excluding it here means
-# `override replace` only touches packages the base image actually has.
-RUN mkdir -p /out/rpms && \
-    find /root/rpmbuild/RPMS -name '*.rpm' \
-        ! -name '*-debuginfo-*' ! -name '*-debugsource-*' \
-        ! -name 'podman-docker-*' \
-        -exec cp {} /out/rpms/ \;
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
 
-FROM ${BASE_IMAGE}
-RUN --mount=type=bind,from=tools,source=/root/rpmbuild/RPMS,target=/tools-rpms \
-    --mount=type=bind,from=module,source=/out/rpms,target=/kmod-rpms \
-    rpm-ostree install -y \
-        mokutil \
-        /tools-rpms/*/bcachefs-tools-0*.rpm \
-        /kmod-rpms/kmod-bcachefs-*.rpm
-RUN set -eux; \
-    KVER=$(rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}'); \
-    depmod -a "${KVER}"; \
-    modinfo -k "${KVER}" bcachefs
+jobs:
+  build:
+    runs-on: ubuntu-latest
 
-RUN --mount=type=bind,from=podman-driver,source=/out/rpms,target=/podman-rpms \
-    rpm-ostree override replace --experimental /podman-rpms/*.rpm
+    strategy:
+      fail-fast: false
+      matrix:
+        fcos_stream:
+          - stable
+          - testing
 
-COPY certs/MOK.der /etc/pki/fcos-bcachefs/MOK.der
-COPY certs/cosign.pub /etc/pki/containers/fcos-bcachefs.pub
-COPY containers/fcos-bcachefs.yaml /etc/containers/registries.d/fcos-bcachefs.yaml
-COPY containers/policy.json /etc/containers/policy.json
-COPY systemd/10-update-window.conf /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/10-update-window.conf
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
 
-RUN set -eux; \
-    printf '[Daemon]\nAutomaticUpdatePolicy=apply\n' > /etc/rpm-ostreed.conf; \
-    systemctl enable rpm-ostreed-automatic.timer; \
-    systemctl mask zincati.service
+      - name: Ensure skopeo is available
+        run: |
+          if ! command -v skopeo >/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+          fi
 
-RUN bootc container lint || echo "bootc lint reported issues (non-fatal)"
+      - name: Resolve base image digest
+        id: base
+        run: |
+          REF="quay.io/fedora/fedora-coreos:${{ matrix.fcos_stream }}"
+          for i in 1 2 3 4 5; do
+            DIGEST=$(skopeo inspect --format '{{.Digest}}' "docker://${REF}") && break
+            echo "skopeo inspect failed (attempt $i), retrying..."
+            sleep $((i * 15))
+          done
+          test -n "$DIGEST"
+          PINNED="quay.io/fedora/fedora-coreos@${DIGEST}"
 
-RUN ostree container commit
+          VERSION=$(skopeo inspect --format '{{index .Labels "org.opencontainers.image.version"}}' "docker://${PINNED}")
+          if [ -z "$VERSION" ] || [ "$VERSION" = "<no value>" ]; then
+            VERSION=$(curl -s "https://builds.coreos.fedoraproject.org/streams/${{ matrix.fcos_stream }}.json" \
+              | jq -r '.architectures.x86_64.artifacts.metal.release')
+          fi
+
+          FREL="${VERSION%%.*}"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "pinned=${PINNED}" >> "$GITHUB_OUTPUT"
+          echo "fcos_version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "builder=quay.io/fedora/fedora:${FREL}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve bcachefs ref
+        id: bcachefs
+        run: |
+          if [ -n "${{ inputs.bcachefs_ref }}" ]; then
+            REF="${{ inputs.bcachefs_ref }}"
+            echo "Using provided ref: $REF"
+          else
+            REF=$(gh api 'repos/koverstreet/bcachefs-tools/tags?per_page=100' \
+              --jq '[.[].name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))]
+                    | sort_by(.[1:] | split(".") | map(tonumber)) | last')
+            echo "Using latest tag: $REF"
+          fi
+
+          if [ -z "$REF" ] || [ "$REF" = "null" ]; then
+            echo "Could not resolve a bcachefs ref, aborting"
+            exit 1
+          fi
+
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "short_ref=${REF:0:12}" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve podman driver ref
+        id: driver
+        run: |
+          REF="${{ inputs.driver_ref }}"
+          : "${REF:=main}"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve build mode
+        id: mode
+        run: |
+          BRANCH="${{ github.ref_name }}"
+          ISOLATED=false
+          LABEL=""
+
+          if [ -n "${{ inputs.bcachefs_ref }}" ]; then
+            ISOLATED=true
+            LABEL="${{ steps.bcachefs.outputs.short_ref }}"
+            echo "isolated: explicit bcachefs_ref given"
+          elif [ "$BRANCH" != "main" ]; then
+            ISOLATED=true
+            SAFE_BRANCH=$(echo "$BRANCH" | tr -c 'a-zA-Z0-9._-' '-')
+            LABEL="branch-${SAFE_BRANCH}"
+            echo "isolated: running from non-main branch ($BRANCH)"
+          elif [ -n "${{ inputs.driver_ref }}" ]; then
+            ISOLATED=true
+            SAFE_DRIVER=$(echo "${{ inputs.driver_ref }}" | cut -c1-12 | tr -c 'a-zA-Z0-9._-' '-')
+            LABEL="driver-${SAFE_DRIVER}"
+            echo "isolated: explicit driver_ref given"
+          else
+            echo "normal build: main branch, no explicit refs"
+          fi
+
+          echo "isolated=$ISOLATED" >> "$GITHUB_OUTPUT"
+          echo "label=$LABEL" >> "$GITHUB_OUTPUT"
+
+      - name: Check if rebuild is needed
+        id: check
+        run: |
+          if [ "${{ steps.mode.outputs.isolated }}" = "true" ]; then
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CURRENT=""
+          for i in 1 2 3; do
+            CURRENT=$(skopeo inspect \
+              --format '{{index .Labels "io.fcos-bcachefs.base-digest"}},{{index .Labels "io.fcos-bcachefs.bcachefs-ref"}},{{index .Labels "io.fcos-bcachefs.driver-ref"}}' \
+              "docker://${IMAGE}:${{ matrix.fcos_stream }}" 2>&1) && break
+            if echo "$CURRENT" | grep -q "manifest unknown"; then
+              CURRENT="none"
+              break
+            fi
+            echo "skopeo inspect failed (attempt $i), retrying..."
+            CURRENT="none"
+            sleep $((i * 15))
+          done
+          WANTED="${{ steps.base.outputs.digest }},${{ steps.bcachefs.outputs.ref }},${{ steps.driver.outputs.ref }}"
+
+          echo "current: ${CURRENT}"
+          echo "wanted:  ${WANTED}"
+
+          if [ "$CURRENT" != "$WANTED" ]; then
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_needed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve image tags
+        id: tags
+        if: ${{ steps.check.outputs.build_needed == 'true' }}
+        run: |
+          STREAM="${{ matrix.fcos_stream }}"
+          REF="${{ steps.bcachefs.outputs.ref }}"
+          SHORT_REF="${{ steps.bcachefs.outputs.short_ref }}"
+          FCOS="${{ steps.base.outputs.fcos_version }}"
+
+          if [ "${{ steps.mode.outputs.isolated }}" = "true" ]; then
+            TAGS="${IMAGE}:git-${{ steps.mode.outputs.label }}-${FCOS}-${STREAM}"
+          else
+            TAGS=$(printf '%s\n%s\n%s' \
+              "${IMAGE}:${STREAM}" \
+              "${IMAGE}:${REF}-${STREAM}" \
+              "${IMAGE}:${REF}-${FCOS}-${STREAM}")
+          fi
+
+          {
+            echo "tags<<EOF"
+            echo "$TAGS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Compute signing fingerprint
+        id: signing
+        run: |
+          if [ -n "$MODULE_SIGNING_KEY" ] && [ -f certs/MOK.der ]; then
+            echo "fingerprint=$(sha256sum certs/MOK.der | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "fingerprint=unsigned" >> "$GITHUB_OUTPUT"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          MODULE_SIGNING_KEY: ${{ secrets.MODULE_SIGNING_KEY }}
+
+      - name: Set up Docker Buildx
+        if: ${{ steps.check.outputs.build_needed == 'true' }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: ${{ steps.check.outputs.build_needed == 'true' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image
+        if: ${{ steps.check.outputs.build_needed == 'true' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          provenance: false
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            BASE_IMAGE=${{ steps.base.outputs.pinned }}
+            BUILDER_IMAGE=${{ steps.base.outputs.builder }}
+            BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }}
+            BCACHEFS_DRIVER_REF=${{ steps.driver.outputs.ref }}
+            SIGNING_FINGERPRINT=${{ steps.signing.outputs.fingerprint }}
+          secrets: |
+            "module_signing_key=${{ secrets.MODULE_SIGNING_KEY }}"
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Fedora CoreOS (${{ matrix.fcos_stream }}) with the bcachefs kernel module and bcachefs-tools
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ steps.base.outputs.fcos_version }}
+            io.fcos-bcachefs.base-digest=${{ steps.base.outputs.digest }}
+            io.fcos-bcachefs.bcachefs-ref=${{ steps.bcachefs.outputs.ref }}
+            io.fcos-bcachefs.driver-ref=${{ steps.driver.outputs.ref }}
+          cache-from: type=gha,scope=${{ matrix.fcos_stream }}
+          cache-to: type=gha,scope=${{ matrix.fcos_stream }},mode=max
+
+      - name: Smoke test image
+        if: ${{ steps.check.outputs.build_needed == 'true' }}
+        run: |
+          TAG=$(echo "${{ steps.tags.outputs.tags }}" | head -n1 | xargs)
+          # podman does an internal re-exec/unshare for its pause process
+          # setup even running as root here — that needs capabilities a
+          # plain `docker run` doesn't grant by default (no CAP_SYS_ADMIN,
+          # seccomp blocks the clone flags it needs). Without --privileged,
+          # `podman info` fails before ever reaching the graphdriver,
+          # producing a false "driver not registered" result below.
+          docker run --rm --privileged -e SIGNING_ENABLED="${{ steps.signing.outputs.enabled }}" "$TAG" bash -c '
+            set -eux
+            KVER=$(rpm -q kernel-core --queryformat "%{VERSION}-%{RELEASE}.%{ARCH}")
+            modinfo -k "$KVER" bcachefs
+            VERMAGIC=$(modinfo -k "$KVER" -F vermagic bcachefs)
+            case "$VERMAGIC" in "$KVER "*) ;; *) echo "vermagic mismatch: $VERMAGIC != $KVER"; exit 1;; esac
+            rpm -q bcachefs-tools
+            bcachefs version
+            rpm -q kmod-bcachefs
+            test -f /usr/lib/modules-load.d/bcachefs.conf
+            test "$(readlink /etc/systemd/system/zincati.service)" = "/dev/null"
+            test -e /etc/systemd/system/timers.target.wants/rpm-ostreed-automatic.timer
+            test -f /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/10-update-window.conf
+            grep -q "AutomaticUpdatePolicy=apply" /etc/rpm-ostreed.conf
+            if [ "$SIGNING_ENABLED" = "true" ]; then
+              SIGNER=$(modinfo -k "$KVER" -F signer bcachefs)
+              echo "module signer: ${SIGNER}"
+              test -n "$SIGNER"
+              test -f /etc/pki/fcos-bcachefs/MOK.der
+            fi
+            OUT=$(podman --storage-driver bcachefs --root /tmp/pmtest info 2>&1 || true)
+            echo "$OUT"
+            echo "$OUT" | grep -qi "not on a bcachefs filesystem" || {
+              echo "bcachefs storage driver not registered in podman"; exit 1;
+            }
+            if [ -f /etc/containers/storage.conf ]; then
+              if grep -q "^driver = \"bcachefs\"" /etc/containers/storage.conf; then
+                echo "storage.conf defaults to bcachefs — must ship inert"; exit 1;
+              fi
+            fi
+          '
+
+      - name: Push image
+        if: ${{ steps.check.outputs.build_needed == 'true' }}
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          provenance: false
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            BASE_IMAGE=${{ steps.base.outputs.pinned }}
+            BUILDER_IMAGE=${{ steps.base.outputs.builder }}
+            BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }}
+            BCACHEFS_DRIVER_REF=${{ steps.driver.outputs.ref }}
+            SIGNING_FINGERPRINT=${{ steps.signing.outputs.fingerprint }}
+          secrets: |
+            "module_signing_key=${{ secrets.MODULE_SIGNING_KEY }}"
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Fedora CoreOS (${{ matrix.fcos_stream }}) with the bcachefs kernel module and bcachefs-tools
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ steps.base.outputs.fcos_version }}
+            io.fcos-bcachefs.base-digest=${{ steps.base.outputs.digest }}
+            io.fcos-bcachefs.bcachefs-ref=${{ steps.bcachefs.outputs.ref }}
+            io.fcos-bcachefs.driver-ref=${{ steps.driver.outputs.ref }}
+          cache-from: type=gha,scope=${{ matrix.fcos_stream }}
+
+      - name: Install cosign
+        if: ${{ steps.check.outputs.build_needed == 'true' }}
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image
+        if: ${{ steps.check.outputs.build_needed == 'true' }}
+        run: |
+          cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
+          if [ -n "$COSIGN_PRIVATE_KEY" ]; then
+            cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${IMAGE}@${{ steps.push.outputs.digest }}"
+          fi
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
