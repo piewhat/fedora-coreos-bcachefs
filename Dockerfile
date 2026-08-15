@@ -209,7 +209,14 @@ RUN set -eux; \
 # skips re-extraction), so the resulting RPM set matches stock podman's
 # file manifest, deps, and scriptlets exactly — only the vendored storage
 # source underneath differs.
-RUN cd /root/rpmbuild && rpmbuild -bb --noprep SPECS/podman.spec
+# `override replace` compares NVRA only, not file contents — an RPM built
+# from Fedora's own unmodified spec at the base image's exact NVR is
+# indistinguishable to it from what's already installed, and gets rejected
+# as "Request to reinstall exact base package versions". Redefining %dist
+# appends a suffix to every subpackage's Release, so the patched build has
+# a distinct (and rpm-comparison-wise newer) NVR without editing the spec.
+RUN cd /root/rpmbuild && \
+    rpmbuild -bb --noprep --define "dist %{?dist}.bcachefs1" SPECS/podman.spec
 # podman-docker provides the docker/moby-engine virtual names, and
 # intentionally conflicts with moby-engine — which FCOS ships by default.
 # It was never part of the base install; excluding it here means
