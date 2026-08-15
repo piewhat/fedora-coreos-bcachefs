@@ -253,7 +253,13 @@ jobs:
         if: ${{ steps.check.outputs.build_needed == 'true' }}
         run: |
           TAG=$(echo "${{ steps.tags.outputs.tags }}" | head -n1 | xargs)
-          docker run --rm -e SIGNING_ENABLED="${{ steps.signing.outputs.enabled }}" "$TAG" bash -c '
+          # podman does an internal re-exec/unshare for its pause process
+          # setup even running as root here — that needs capabilities a
+          # plain `docker run` doesn't grant by default (no CAP_SYS_ADMIN,
+          # seccomp blocks the clone flags it needs). Without --privileged,
+          # `podman info` fails before ever reaching the graphdriver,
+          # producing a false "driver not registered" result below.
+          docker run --rm --privileged -e SIGNING_ENABLED="${{ steps.signing.outputs.enabled }}" "$TAG" bash -c '
             set -eux
             KVER=$(rpm -q kernel-core --queryformat "%{VERSION}-%{RELEASE}.%{ARCH}")
             modinfo -k "$KVER" bcachefs
