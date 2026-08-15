@@ -143,8 +143,7 @@ RUN rpmdev-setuptree
 WORKDIR /build
 RUN git clone https://github.com/ticpu/bcachefs-storage-driver.git && \
     cd bcachefs-storage-driver && \
-    git checkout "$BCACHEFS_DRIVER_REF" && \
-    git rev-parse --short=8 HEAD > /driver_sha
+    git checkout "$BCACHEFS_DRIVER_REF"
 RUN set -eux; \
     PNVR=$(cat /pnvr); \
     dnf download --source "podman-${PNVR}" -y --downloaddir /build || \
@@ -210,40 +209,23 @@ RUN set -eux; \
 # skips re-extraction), so the resulting RPM set matches stock podman's
 # file manifest, deps, and scriptlets exactly — only the vendored storage
 # source underneath differs.
-# `override replace` compares NVRA only, not file contents — an RPM built
-# from Fedora's own unmodified spec at the base image's exact NVR is
-# indistinguishable to it from what's already installed, and gets rejected
-# as "Request to reinstall exact base package versions". Redefining %dist
-# appends a suffix to every subpackage's Release, so the patched build has
-# a distinct (and rpm-comparison-wise newer) NVR without editing the spec.
-#
-# The suffix is `fcosbcachefs.g<shortsha>`, not bare `.git<shortsha>` —
-# Fedora's own `.git<sha>` convention means "this package's source is an
-# unreleased git snapshot", which would be misleading here: it's official
-# podman plus a patch from a DIFFERENT repo (bcachefs-storage-driver).
-# `fcosbcachefs` self-identifies this repo as the source of the patch, so
-# `rpm -q podman` output explains itself; `g<sha>` is the driver repo's
-# resolved commit, kept for the same reason a static suffix wouldn't do —
-# two builds with different driver content but the same podman NVR would
-# collide with the exact same "exact base package versions" error, since
-# rpm-ostree can't tell they differ otherwise. Keying off the actual commit
-# means the NVR changes whenever the patched content does, even when
-# BCACHEFS_DRIVER_REF is a moving target like "main".
-#
-# `--define "dist %{?dist}.fcosbcachefs.g<sha>"` would be self-referential:
-# the new dist body is stored as literal text containing "%{?dist}", which
-# is resolved at USE time — by which point %dist means the new definition
-# itself, recursing forever. Fix: resolve the current dist to a plain
-# string in the shell first (rpm --eval fully expands it, leaving no
-# %{...} token behind), then pass that literal value.
-RUN cd /root/rpmbuild && \
-    DIST=$(rpm --eval '%{?dist}') && \
-    DRIVER_SHA=$(cat /driver_sha) && \
-    rpmbuild -bb --noprep --define "dist ${DIST}.fcosbcachefs.g${DRIVER_SHA}" SPECS/podman.spec
+# Build from the already-patched BUILD tree via the real spec (--noprep
+# skips re-extraction), so the resulting RPM set matches stock podman's
+# file manifest, deps, and scriptlets exactly — only the vendored storage
+# source underneath differs. No dist-suffix override here: the NVR stays
+# byte-identical to stock. That's deliberate — it means a user can later
+# `rpm-ostree install podman-machine` (or any other podman-family package)
+# unversioned and have the solver find a satisfying build against our
+# exact podman NVR in updates-archive, without needing to hand-pin
+# anything. (The final stage swaps this in via `override remove` +
+# `install` rather than `override replace`, which is what makes an
+# identical NVR possible — `override replace` specifically rejects a
+# replacement whose NVR matches what's already installed.)
+RUN cd /root/rpmbuild && rpmbuild -bb --noprep SPECS/podman.spec
 # podman-docker provides the docker/moby-engine virtual names, and
 # intentionally conflicts with moby-engine — which FCOS ships by default.
-# It was never part of the base install; excluding it here means
-# `override replace` only touches packages the base image actually has.
+# It was never part of the base install; excluding it here means the
+# install step below only touches packages that belong.
 RUN mkdir -p /out/rpms && \
     find /root/rpmbuild/RPMS -name '*.rpm' \
         ! -name '*-debuginfo-*' ! -name '*-debugsource-*' \
@@ -262,18 +244,27 @@ RUN set -eux; \
     depmod -a "${KVER}"; \
     modinfo -k "${KVER}" bcachefs
 
-# Every rebuilt podman.spec subpackage is included deliberately —
-# podman-machine, podman-remote, podman-tests, podmansh — so all of them
-# are available at the driver-patched version, matching what a user would
-# otherwise try to install from Fedora's repos and find version-pinned
-# against stock podman. This brings in podman-machine's full qemu/firmware
-# stack and podman-tests' bats/buildah/perl-threads chain on every image;
-# that size cost is accepted in exchange for the subpackages actually being
-# usable. podman-docker is still excluded at the staging step (see above)
-# — that's a real package conflict with moby-engine, not a "not in base"
-# omission.
+# podman is already part of the base compose. `override remove` clears it
+# from the base layer entirely (no version comparison involved), and the
+# subsequent `install` then layers our rebuilt podman — same NVR as
+# stock — as an ordinary local package. This is what lets the patched
+# build keep stock's exact NVR: `override replace` can't do that (it
+# rejects identical NVRs), but remove+install has no such restriction
+# since by the time install runs, nothing at that name exists to compare
+# against.
+#
+# Only plain podman is installed — not podman-machine, podman-remote,
+# podman-tests, or podmansh. Bundling those was a workaround for the
+# version-mismatch problem that no longer exists now that podman keeps
+# its stock NVR: a user who wants any of them can
+# `rpm-ostree install <pkg>` and the solver finds a matching build in
+# updates-archive, without every image paying their dependency cost
+# (qemu/firmware for podman-machine, bats/buildah/perl-threads for
+# podman-tests) whether it's used or not.
 RUN --mount=type=bind,from=podman-driver,source=/out/rpms,target=/podman-rpms \
-    rpm-ostree override replace --experimental /podman-rpms/*.rpm
+    set -eux; \
+    rpm-ostree override remove podman; \
+    rpm-ostree install -y /podman-rpms/podman-[0-9]*.rpm
 
 COPY certs/MOK.der /etc/pki/fcos-bcachefs/MOK.der
 COPY certs/cosign.pub /etc/pki/containers/fcos-bcachefs.pub
