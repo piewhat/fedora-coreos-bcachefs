@@ -175,6 +175,36 @@ RUN bash /build/bcachefs-storage-driver/packaging/apply-driver.sh \
     --module "$(cat /storage_module)" \
     "$(cat /storage_dir)" \
     /build/bcachefs-storage-driver/driver
+# apply-driver.sh drops drivers/bcachefs/ into the vendor tree as a new
+# package directory, but `go build -mod=vendor` resolves imports against
+# vendor/modules.txt, not the filesystem — a new package path absent from
+# that manifest is refused ("ignoring package ... missing from
+# vendor/modules.txt"). Editing existing vendored files (driver_linux.go,
+# driver.go, appending register_bcachefs.go into the already-vendored
+# drivers/register package) doesn't need this; only the brand-new
+# drivers/bcachefs package path does. Insert one line into the storage
+# module's block, anchored right after its "## explicit" marker — any
+# line within the block works for Go's parser, this anchor is just always
+# present and easy to find.
+RUN set -eux; \
+    MOD="$(cat /storage_module)"; \
+    PKG="${MOD}/drivers/bcachefs"; \
+    MODULES_TXT="$(cat /modules_txt)"; \
+    test -f "$MODULES_TXT"; \
+    if ! grep -qxF "$PKG" "$MODULES_TXT"; then \
+        awk -v modhdr="# ${MOD} " -v pkg="$PKG" ' \
+            { print } \
+            index($0, modhdr) == 1 { inblock=1; next } \
+            /^# / && index($0, modhdr) != 1 { inblock=0 } \
+            inblock && index($0, "## explicit") == 1 && !done { print pkg; done=1 } \
+        ' "$MODULES_TXT" > "$MODULES_TXT.new"; \
+        mv "$MODULES_TXT.new" "$MODULES_TXT"; \
+    fi; \
+    grep -qxF "$PKG" "$MODULES_TXT" || { \
+        echo "FATAL: failed to register $PKG in $MODULES_TXT — module header anchor may not match"; \
+        exit 1; \
+    }; \
+    echo "registered in modules.txt: $PKG"
 # Build from the already-patched BUILD tree via the real spec (--noprep
 # skips re-extraction), so the resulting RPM set matches stock podman's
 # file manifest, deps, and scriptlets exactly — only the vendored storage
