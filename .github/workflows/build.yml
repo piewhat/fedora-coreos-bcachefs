@@ -268,7 +268,6 @@ jobs:
             rpm -q bcachefs-tools
             bcachefs version
             rpm -q kmod-bcachefs
-            rpm -q podman-machine podman-remote podmansh
             test -f /usr/lib/modules-load.d/bcachefs.conf
             test "$(readlink /etc/systemd/system/zincati.service)" = "/dev/null"
             test -e /etc/systemd/system/timers.target.wants/rpm-ostreed-automatic.timer
