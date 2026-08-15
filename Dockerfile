@@ -6,8 +6,7 @@ FROM ${BASE_IMAGE} AS kinfo
 RUN rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}' > /kver && \
     rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}' > /kvr && \
     rpm -q kernel-core --queryformat '%{ARCH}' > /karch && \
-    rpm -q podman --queryformat '%{VERSION}-%{RELEASE}' > /pnvr && \
-    rpm -qa --queryformat '%{NAME}\n' | sort -u > /installed_pkgs
+    rpm -q podman --queryformat '%{VERSION}-%{RELEASE}' > /pnvr
 
 FROM ${BUILDER_IMAGE} AS tools
 ARG BCACHEFS_REF
@@ -259,29 +258,18 @@ RUN set -eux; \
     depmod -a "${KVER}"; \
     modinfo -k "${KVER}" bcachefs
 
-# A full spec rebuild produces every podman.spec subpackage — podman-tests,
-# podman-machine, podman-remote, podmansh — not just plain podman. Passing
-# all of them to override replace installs whichever ones the base image
-# doesn't already have, dragging in their entire dependency trees (qemu +
-# firmware for podman-machine, bats/buildah/perl-threads for podman-tests,
-# etc.). Filter to only package NAMES already installed in the base image,
-# so this is strictly a like-for-like swap — nothing new is ever added.
+# Every rebuilt podman.spec subpackage is included deliberately —
+# podman-machine, podman-remote, podman-tests, podmansh — so all of them
+# are available at the driver-patched version, matching what a user would
+# otherwise try to install from Fedora's repos and find version-pinned
+# against stock podman. This brings in podman-machine's full qemu/firmware
+# stack and podman-tests' bats/buildah/perl-threads chain on every image;
+# that size cost is accepted in exchange for the subpackages actually being
+# usable. podman-docker is still excluded at the staging step (see above)
+# — that's a real package conflict with moby-engine, not a "not in base"
+# omission.
 RUN --mount=type=bind,from=podman-driver,source=/out/rpms,target=/podman-rpms \
-    --mount=type=bind,from=kinfo,source=/installed_pkgs,target=/installed_pkgs \
-    set -eux; \
-    mkdir -p /tmp/podman-replace; \
-    for f in /podman-rpms/*.rpm; do \
-        NAME=$(rpm -qp --queryformat '%{NAME}' "$f"); \
-        if grep -qxF "$NAME" /installed_pkgs; then \
-            cp "$f" /tmp/podman-replace/; \
-            echo "replacing: $NAME"; \
-        else \
-            echo "skipping (not in base image): $NAME"; \
-        fi; \
-    done; \
-    test -n "$(ls -A /tmp/podman-replace)"; \
-    rpm-ostree override replace --experimental /tmp/podman-replace/*.rpm; \
-    rm -rf /tmp/podman-replace
+    rpm-ostree override replace --experimental /podman-rpms/*.rpm
 
 COPY certs/MOK.der /etc/pki/fcos-bcachefs/MOK.der
 COPY certs/cosign.pub /etc/pki/containers/fcos-bcachefs.pub
