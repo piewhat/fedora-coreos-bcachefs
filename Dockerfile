@@ -210,9 +210,14 @@ RUN set -eux; \
 # file manifest, deps, and scriptlets exactly — only the vendored storage
 # source underneath differs.
 RUN cd /root/rpmbuild && rpmbuild -bb --noprep SPECS/podman.spec
+# podman-docker provides the docker/moby-engine virtual names, and
+# intentionally conflicts with moby-engine — which FCOS ships by default.
+# It was never part of the base install; excluding it here means
+# `override replace` only touches packages the base image actually has.
 RUN mkdir -p /out/rpms && \
     find /root/rpmbuild/RPMS -name '*.rpm' \
         ! -name '*-debuginfo-*' ! -name '*-debugsource-*' \
+        ! -name 'podman-docker-*' \
         -exec cp {} /out/rpms/ \;
 
 FROM ${BASE_IMAGE}
