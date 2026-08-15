@@ -208,19 +208,14 @@ RUN set -eux; \
 # Build from the already-patched BUILD tree via the real spec (--noprep
 # skips re-extraction), so the resulting RPM set matches stock podman's
 # file manifest, deps, and scriptlets exactly — only the vendored storage
-# source underneath differs.
-# Build from the already-patched BUILD tree via the real spec (--noprep
-# skips re-extraction), so the resulting RPM set matches stock podman's
-# file manifest, deps, and scriptlets exactly — only the vendored storage
-# source underneath differs. No dist-suffix override here: the NVR stays
-# byte-identical to stock. That's deliberate — it means a user can later
-# `rpm-ostree install podman-machine` (or any other podman-family package)
-# unversioned and have the solver find a satisfying build against our
-# exact podman NVR in updates-archive, without needing to hand-pin
-# anything. (The final stage swaps this in via `override remove` +
-# `install` rather than `override replace`, which is what makes an
-# identical NVR possible — `override replace` specifically rejects a
-# replacement whose NVR matches what's already installed.)
+# source underneath differs. No dist-suffix override: the NVR stays
+# byte-identical to stock, so a user can later `rpm-ostree install
+# podman-machine` (or any other podman-family package) unversioned and
+# have the solver find a satisfying build against our exact podman NVR in
+# updates-archive, without needing to hand-pin anything. The final stage
+# swaps this podman in via two separate `override remove` +
+# `install` commands rather than `override replace` (which specifically
+# rejects a replacement whose NVR matches what's already installed).
 RUN cd /root/rpmbuild && rpmbuild -bb --noprep SPECS/podman.spec
 # podman-docker provides the docker/moby-engine virtual names, and
 # intentionally conflicts with moby-engine — which FCOS ships by default.
@@ -244,46 +239,26 @@ RUN set -eux; \
     depmod -a "${KVER}"; \
     modinfo -k "${KVER}" bcachefs
 
-# podman is already part of the base compose. `override remove` clears it
-# from the base layer entirely (no version comparison involved), and the
-# subsequent `install` then layers our rebuilt podman — same NVR as
-# stock — as an ordinary local package. This is what lets the patched
-# build keep stock's exact NVR: `override replace` can't do that (it
-# rejects identical NVRs), but remove+install has no such restriction
-# since by the time install runs, nothing at that name exists to compare
-# against.
+# podman is already part of the base compose. Two separate commands, as
+# plain `override remove podman` alone would leave: the base image's
+# `toolbox` package also requires podman (loosely, `>= 1.6.4`), and each
+# rpm-ostree invocation commits its own intermediate state — removing
+# podman alone would commit a tree with toolbox present but podman gone,
+# which is invalid and gets rejected before the install ever runs.
+# Removing toolbox in the same command clears that requirement entirely;
+# nothing else in the base depends on podman. toolbox is FCOS's
+# interactive dev-container CLI — losing it doesn't affect any service or
+# Quadlet unit, just a manual convenience command.
 #
-# Only plain podman is installed — not podman-machine, podman-remote,
-# podman-tests, or podmansh. Bundling those was a workaround for the
-# version-mismatch problem that no longer exists now that podman keeps
-# its stock NVR: a user who wants any of them can
-# `rpm-ostree install <pkg>` and the solver finds a matching build in
-# updates-archive, without every image paying their dependency cost
-# (qemu/firmware for podman-machine, bats/buildah/perl-threads for
-# podman-tests) whether it's used or not.
-# podman is already part of the base compose, and something else in the
-# base — toolbox — requires it (>= 1.6.4). override remove and install as
-# two SEPARATE rpm-ostree invocations each commit their own intermediate
-# state; the remove alone would commit a state with toolbox present but
-# podman gone, which is invalid and gets rejected before install ever
-# runs. `override remove --install` does both in one transaction, so the
-# depsolver only ever evaluates the final state — where the newly
-# installed podman satisfies toolbox directly. This also lets the patched
-# build keep stock's exact NVR: `override replace` can't do that (it
-# rejects identical NVRs), but override-remove-with-install has no such
-# restriction since nothing at that name exists to compare against by the
-# time the install side of the transaction resolves.
-#
-# Only plain podman is installed — not podman-machine, podman-remote,
-# podman-tests, or podmansh. Bundling those was a workaround for the
-# version-mismatch problem that no longer exists now that podman keeps
-# its stock NVR: a user who wants any of them can
-# `rpm-ostree install <pkg>` and the solver finds a matching build in
-# updates-archive, without every image paying their dependency cost
-# (qemu/firmware for podman-machine, bats/buildah/perl-threads for
-# podman-tests) whether it's used or not.
+# Only plain podman is reinstalled here, not podman-machine/remote/tests/
+# podmansh — the NVR stays byte-identical to stock (override remove has
+# no "must differ" restriction the way override replace does), so a user
+# who wants any of those later can `rpm-ostree install <pkg>` unversioned
+# and the solver finds a matching build against our exact NVR in
+# updates-archive, without paying their dependency cost on every image.
+RUN rpm-ostree override remove podman toolbox
 RUN --mount=type=bind,from=podman-driver,source=/out/rpms,target=/podman-rpms \
-    rpm-ostree override remove podman --install /podman-rpms/podman-[0-9]*.rpm
+    rpm-ostree install -y /podman-rpms/podman-[0-9]*.rpm
 
 COPY certs/MOK.der /etc/pki/fcos-bcachefs/MOK.der
 COPY certs/cosign.pub /etc/pki/containers/fcos-bcachefs.pub
