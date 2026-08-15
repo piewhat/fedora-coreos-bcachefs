@@ -121,12 +121,12 @@ jobs:
             echo "isolated: explicit bcachefs_ref given"
           elif [ "$BRANCH" != "main" ]; then
             ISOLATED=true
-            SAFE_BRANCH=$(echo "$BRANCH" | tr -c 'a-zA-Z0-9._-' '-')
+            SAFE_BRANCH=$(printf '%s' "$BRANCH" | tr -c 'a-zA-Z0-9._-' '-' | sed 's/^-*//; s/-*$//')
             LABEL="branch-${SAFE_BRANCH}"
             echo "isolated: running from non-main branch ($BRANCH)"
           elif [ -n "${{ inputs.driver_ref }}" ]; then
             ISOLATED=true
-            SAFE_DRIVER=$(echo "${{ inputs.driver_ref }}" | cut -c1-12 | tr -c 'a-zA-Z0-9._-' '-')
+            SAFE_DRIVER=$(printf '%s' "${{ inputs.driver_ref }}" | cut -c1-12 | tr -c 'a-zA-Z0-9._-' '-' | sed 's/^-*//; s/-*$//')
             LABEL="driver-${SAFE_DRIVER}"
             echo "isolated: explicit driver_ref given"
           else
