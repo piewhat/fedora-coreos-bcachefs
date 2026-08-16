@@ -42,7 +42,7 @@ rpm-ostree's built-in automatic updates are enabled
 (`AutomaticUpdatePolicy=apply`): the stock `rpm-ostreed-automatic.timer`
 checks for a new image daily at ~04:00 (with up to 30 minutes of randomized
 delay) and reboots only when an update was staged. Layered packages are
-reapplied on every update. Zincati is masked, as it can't update ostree
+reapplied on every update. Zincati is masked because it can't update ostree
 container images.
 
 Adjust the schedule (persists across updates):
@@ -82,9 +82,16 @@ cosign verify ghcr.io/piewhat/fedora-coreos-bcachefs:stable \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
+## Podman bcachefs storage driver (optional)
+
+Every image ships podman rebuilt with the
+[bcachefs-storage-driver](https://github.com/ticpu/bcachefs-storage-driver)
+it is disabled by default.
+
 ## Tags
 
-Pinned to a bcachefs release, with or without the FCOS version:
+`stable` and `testing` track the matching Fedora CoreOS stream. Also
+pinned to a specific bcachefs release, with or without the FCOS version:
 
 ```
 ghcr.io/piewhat/fedora-coreos-bcachefs:<bcachefs-tag>-<stream>
