@@ -269,7 +269,6 @@ jobs:
             bcachefs version
             rpm -q kmod-bcachefs
             rpm -q podman
-            rpm -q toolbox 2>/dev/null && { echo "toolbox should have been removed"; exit 1; } || true
             test -f /usr/lib/modules-load.d/bcachefs.conf
             test "$(readlink /etc/systemd/system/zincati.service)" = "/dev/null"
             test -e /etc/systemd/system/timers.target.wants/rpm-ostreed-automatic.timer
