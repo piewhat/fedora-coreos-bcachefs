@@ -43,6 +43,7 @@ jobs:
         fcos_stream:
           - stable
           - testing
+          - next
 
     steps:
       - name: Checkout repository
