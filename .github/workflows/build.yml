@@ -271,10 +271,10 @@ jobs:
             
             # FCOS <= 44 (rpm-ostree) vs > 44 (bootc+dnl): check for rpm-ostree binary to disambiguate
             if command -v rpm-ostree >/dev/null 2>&1; then
-              # Zincati is deprecated in newer FCOS streams. 
-              # Only assert that it is masked if it actually exists.
-              if [ -f /usr/lib/systemd/system/zincati.service ]; then
-                test "$(readlink /etc/systemd/system/zincati.service || true)" = "/dev/null"
+              # Zincati is deprecated in newer FCOS streams.
+              # Only assert that it points to /dev/null if the mask symlink actually exists in /etc
+              if [ -L /etc/systemd/system/zincati.service ]; then
+                test "$(readlink /etc/systemd/system/zincati.service)" = "/dev/null"
               fi
               
               test -e /etc/systemd/system/timers.target.wants/rpm-ostreed-automatic.timer
