@@ -143,7 +143,8 @@ RUN set -eux; \
     cd bcachefs-storage-driver; \
     git checkout "$BCACHEFS_DRIVER_REF"; \
     PNVR=$(cat /pnvr); \
-    dnf download --source "podman-${PNVR}" -y --downloaddir /build || \
+    cd /build; \
+    dnf download --source --enablerepo='*source*' "podman-${PNVR}" -y --downloaddir /build || \
     koji download-build --noprogress --arch src "podman-${PNVR}"; \
     rpm -i --nosignature /build/podman-*.src.rpm; \
     dnf builddep -y /root/rpmbuild/SPECS/podman.spec; \
