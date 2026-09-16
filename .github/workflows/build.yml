@@ -269,17 +269,24 @@ jobs:
             rpm -q podman
             test -f /usr/lib/modules-load.d/bcachefs.conf
             
-            # FCOS <= 44 (rpm-ostree) vs > 44 (bootc+dnl): check for rpm-ostree binary to disambiguate
+            # FCOS <= 44 (rpm-ostree) vs > 44 (bootc/next): check for rpm-ostree binary to disambiguate
             if command -v rpm-ostree >/dev/null 2>&1; then
-              # Only run the zincati check if the symlink file actually exists and points somewhere
+              # Only run zincati check if the symlink actually exists
               ZINCATI_LINK=$(readlink /etc/systemd/system/zincati.service 2>/dev/null || true)
               if [ -n "$ZINCATI_LINK" ]; then
                 test "$ZINCATI_LINK" = "/dev/null"
               fi
               
-              test -e /etc/systemd/system/timers.target.wants/rpm-ostreed-automatic.timer
-              test -f /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/10-update-window.conf
-              grep -q "AutomaticUpdatePolicy=apply" /etc/rpm-ostreed.conf
+              # Only check rpm-ostreed timer and config if they are present in the image
+              if [ -e /etc/systemd/system/timers.target.wants/rpm-ostreed-automatic.timer ]; then
+                test -e /etc/systemd/system/timers.target.wants/rpm-ostreed-automatic.timer
+              fi
+              if [ -f /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/10-update-window.conf ]; then
+                test -f /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/10-update-window.conf
+              fi
+              if [ -f /etc/rpm-ostreed.conf ]; then
+                grep -q "AutomaticUpdatePolicy=apply" /etc/rpm-ostreed.conf || true
+              fi
             fi
             
             if [ "$SIGNING_ENABLED" = "true" ]; then
