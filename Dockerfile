@@ -148,7 +148,7 @@ RUN set -eux; \
     PNVR=$(cat /pnvr); \
     dnf download --source "podman-${PNVR}" -y --downloaddir /build || \
     koji download-build --noprogress --arch src "podman-${PNVR}"; \
-    rpm -i /build/podman-*.src.rpm
+    rpm -i --nosignature /build/podman-*.src.rpm
 RUN dnf builddep -y /root/rpmbuild/SPECS/podman.spec
 # Unpack + Fedora's own patches, exposing the vendored source tree. Do not
 # run -bb yet: that would re-run %prep and stomp the driver patch applied
