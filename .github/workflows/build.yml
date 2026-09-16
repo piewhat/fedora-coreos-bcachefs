@@ -318,7 +318,13 @@ jobs:
       - name: Sign image
         if: ${{ steps.check.outputs.build_needed == 'true' }}
         run: |
+          # Authenticate cosign with GHCR
+          echo "${{ secrets.GITHUB_TOKEN }}" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
+          
+          # Sign the image
           cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
+          
+          # Optionally sign with a private key if provided
           if [ -n "$COSIGN_PRIVATE_KEY" ]; then
             cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${IMAGE}@${{ steps.push.outputs.digest }}"
           fi
