@@ -230,7 +230,6 @@ RUN mkdir -p /out/rpms && \
 
 ARG FCOS_MAJOR=44
 FROM ${BASE_IMAGE}
-ARG FCOS_MAJOR=44
 RUN --mount=type=bind,from=tools,source=/root/rpmbuild/RPMS,target=/tools-rpms \
     --mount=type=bind,from=module,source=/out/rpms,target=/kmod-rpms \
     if [ "$FCOS_MAJOR" -le 44 ]; then \
@@ -278,7 +277,7 @@ RUN set -eux; \
 # our exact podman version. podman-docker is excluded at the staging step
 # (see above) regardless — that's a real conflict with moby-engine.
 RUN --mount=type=bind,from=podman-driver,source=/out/rpms,target=/podman-rpms \
-    rpm -Uvh --replacepkgs /podman-rpms/podman-[0-9]*.rpm
+    rpm -Uvh --replacepkgs --nosignature /podman-rpms/podman-[0-9]*.rpm
 
 COPY certs/MOK.der /etc/pki/fcos-bcachefs/MOK.der
 COPY certs/cosign.pub /etc/pki/containers/fcos-bcachefs.pub
