@@ -67,7 +67,7 @@ RUN set -eux; \
 RUN --mount=type=bind,from=tools,source=/root/rpmbuild/RPMS,target=/rpms \
     set -eux; \
     KVER=$(cat /kver); \
-    rpm -i --noscripts --nodeps /rpms/noarch/dkms-bcachefs-*.rpm; \
+    rpm -i --noscripts --nodeps --nosignature /rpms/noarch/dkms-bcachefs-*.rpm; \
     SRC=$(ls -d /usr/src/bcachefs-*); \
     PACKAGE_NAME=$(sed -n 's/^PACKAGE_NAME="\?\([^"]*\)"\?.*/\1/p' "${SRC}/dkms.conf"); \
     PACKAGE_VERSION=$(sed -n 's/^PACKAGE_VERSION="\?\([^"]*\)"\?.*/\1/p' "${SRC}/dkms.conf"); \
