@@ -257,12 +257,6 @@ jobs:
         if: ${{ steps.check.outputs.build_needed == 'true' }}
         run: |
           TAG=$(echo "${{ steps.tags.outputs.tags }}" | head -n1 | xargs)
-          # podman does an internal re-exec/unshare for its pause process
-          # setup even running as root here — that needs capabilities a
-          # plain `podman run` doesn't grant by default (no CAP_SYS_ADMIN,
-          # seccomp blocks the clone flags it needs). Without --privileged,
-          # `podman info` fails before ever reaching the graphdriver,
-          # producing a false "driver not registered" result below.
           podman run --rm --privileged -e SIGNING_ENABLED="${{ steps.signing.outputs.enabled }}" "$TAG" bash -c '
             set -eux
             KVER=$(rpm -q kernel-core --queryformat "%{VERSION}-%{RELEASE}.%{ARCH}")
@@ -274,13 +268,20 @@ jobs:
             rpm -q kmod-bcachefs
             rpm -q podman
             test -f /usr/lib/modules-load.d/bcachefs.conf
+            
             # FCOS <= 44 (rpm-ostree) vs > 44 (bootc+dnl): check for rpm-ostree binary to disambiguate
             if command -v rpm-ostree >/dev/null 2>&1; then
-              test "$(readlink /etc/systemd/system/zincati.service)" = "/dev/null"
+              # Zincati is deprecated in newer FCOS streams. 
+              # Only assert that it is masked if it actually exists.
+              if [ -f /usr/lib/systemd/system/zincati.service ]; then
+                test "$(readlink /etc/systemd/system/zincati.service || true)" = "/dev/null"
+              fi
+              
               test -e /etc/systemd/system/timers.target.wants/rpm-ostreed-automatic.timer
               test -f /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/10-update-window.conf
               grep -q "AutomaticUpdatePolicy=apply" /etc/rpm-ostreed.conf
             fi
+            
             if [ "$SIGNING_ENABLED" = "true" ]; then
               SIGNER=$(modinfo -k "$KVER" -F signer bcachefs)
               echo "module signer: ${SIGNER}"
