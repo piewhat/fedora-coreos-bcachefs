@@ -77,6 +77,7 @@ jobs:
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "pinned=${PINNED}" >> "$GITHUB_OUTPUT"
           echo "fcos_version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "fcos_major=${FREL}" >> "$GITHUB_OUTPUT"
           echo "builder=quay.io/fedora/fedora:${FREL}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve bcachefs ref
@@ -237,6 +238,7 @@ jobs:
             BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }}
             BCACHEFS_DRIVER_REF=${{ steps.driver.outputs.ref }}
             SIGNING_FINGERPRINT=${{ steps.signing.outputs.fingerprint }}
+            FCOS_MAJOR=${{ steps.base.outputs.fcos_major }}
           secrets: |
             "module_signing_key=${{ secrets.MODULE_SIGNING_KEY }}"
           labels: |
@@ -271,10 +273,13 @@ jobs:
             rpm -q kmod-bcachefs
             rpm -q podman
             test -f /usr/lib/modules-load.d/bcachefs.conf
-            test "$(readlink /etc/systemd/system/zincati.service)" = "/dev/null"
-            test -e /etc/systemd/system/timers.target.wants/rpm-ostreed-automatic.timer
-            test -f /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/10-update-window.conf
-            grep -q "AutomaticUpdatePolicy=apply" /etc/rpm-ostreed.conf
+            # FCOS <= 44 (rpm-ostree) vs > 44 (bootc+dnl): check for rpm-ostree binary to disambiguate
+            if command -v rpm-ostree >/dev/null 2>&1; then
+              test "$(readlink /etc/systemd/system/zincati.service)" = "/dev/null"
+              test -e /etc/systemd/system/timers.target.wants/rpm-ostreed-automatic.timer
+              test -f /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/10-update-window.conf
+              grep -q "AutomaticUpdatePolicy=apply" /etc/rpm-ostreed.conf
+            fi
             if [ "$SIGNING_ENABLED" = "true" ]; then
               SIGNER=$(modinfo -k "$KVER" -F signer bcachefs)
               echo "module signer: ${SIGNER}"
@@ -308,6 +313,7 @@ jobs:
             BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }}
             BCACHEFS_DRIVER_REF=${{ steps.driver.outputs.ref }}
             SIGNING_FINGERPRINT=${{ steps.signing.outputs.fingerprint }}
+            FCOS_MAJOR=${{ steps.base.outputs.fcos_major }}
           secrets: |
             "module_signing_key=${{ secrets.MODULE_SIGNING_KEY }}"
           labels: |
