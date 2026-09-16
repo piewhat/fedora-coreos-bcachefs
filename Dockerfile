@@ -230,6 +230,7 @@ RUN mkdir -p /out/rpms && \
 
 ARG FCOS_MAJOR=44
 FROM ${BASE_IMAGE}
+ARG FCOS_MAJOR=44
 RUN --mount=type=bind,from=tools,source=/root/rpmbuild/RPMS,target=/tools-rpms \
     --mount=type=bind,from=module,source=/out/rpms,target=/kmod-rpms \
     if [ "$FCOS_MAJOR" -le 44 ]; then \
