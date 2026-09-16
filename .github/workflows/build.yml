@@ -212,45 +212,46 @@ jobs:
         env:
           MODULE_SIGNING_KEY: ${{ secrets.MODULE_SIGNING_KEY }}
 
-      - name: Set up Docker Buildx
-        if: ${{ steps.check.outputs.build_needed == 'true' }}
-        uses: docker/setup-buildx-action@v3
-
       - name: Log in to GitHub Container Registry
         if: ${{ steps.check.outputs.build_needed == 'true' }}
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Build image
         if: ${{ steps.check.outputs.build_needed == 'true' }}
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          provenance: false
-          tags: ${{ steps.tags.outputs.tags }}
-          build-args: |
-            BASE_IMAGE=${{ steps.base.outputs.pinned }}
-            BUILDER_IMAGE=${{ steps.base.outputs.builder }}
-            BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }}
-            BCACHEFS_DRIVER_REF=${{ steps.driver.outputs.ref }}
-            SIGNING_FINGERPRINT=${{ steps.signing.outputs.fingerprint }}
-            FCOS_MAJOR=${{ steps.base.outputs.fcos_major }}
-          secrets: |
-            "module_signing_key=${{ secrets.MODULE_SIGNING_KEY }}"
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=Fedora CoreOS (${{ matrix.fcos_stream }}) with the bcachefs kernel module and bcachefs-tools
-            org.opencontainers.image.licenses=MIT
-            org.opencontainers.image.version=${{ steps.base.outputs.fcos_version }}
-            io.fcos-bcachefs.base-digest=${{ steps.base.outputs.digest }}
-            io.fcos-bcachefs.bcachefs-ref=${{ steps.bcachefs.outputs.ref }}
-            io.fcos-bcachefs.driver-ref=${{ steps.driver.outputs.ref }}
-          cache-from: type=gha,scope=${{ matrix.fcos_stream }}
-          cache-to: type=gha,scope=${{ matrix.fcos_stream }},mode=max
+        env:
+          MODULE_SIGNING_KEY: ${{ secrets.MODULE_SIGNING_KEY }}
+        run: |
+          SECRET_ARGS=""
+          if [ -n "$MODULE_SIGNING_KEY" ]; then
+            echo "$MODULE_SIGNING_KEY" > /tmp/module_signing_key
+            SECRET_ARGS="--secret id=module_signing_key,src=/tmp/module_signing_key"
+          fi
+
+          TAG_ARGS=()
+          while IFS= read -r tag; do
+            if [ -n "$tag" ]; then
+              TAG_ARGS+=("-t" "$tag")
+            fi
+          done <<< "${{ steps.tags.outputs.tags }}"
+
+          podman build "${TAG_ARGS[@]}" \
+            --build-arg BASE_IMAGE="${{ steps.base.outputs.pinned }}" \
+            --build-arg BUILDER_IMAGE="${{ steps.base.outputs.builder }}" \
+            --build-arg BCACHEFS_REF="${{ steps.bcachefs.outputs.ref }}" \
+            --build-arg BCACHEFS_DRIVER_REF="${{ steps.driver.outputs.ref }}" \
+            --build-arg SIGNING_FINGERPRINT="${{ steps.signing.outputs.fingerprint }}" \
+            --build-arg FCOS_MAJOR="${{ steps.base.outputs.fcos_major }}" \
+            $SECRET_ARGS \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --label "org.opencontainers.image.description=Fedora CoreOS (${{ matrix.fcos_stream }}) with the bcachefs kernel module and bcachefs-tools" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            --label "org.opencontainers.image.version=${{ steps.base.outputs.fcos_version }}" \
+            --label "io.fcos-bcachefs.base-digest=${{ steps.base.outputs.digest }}" \
+            --label "io.fcos-bcachefs.bcachefs-ref=${{ steps.bcachefs.outputs.ref }}" \
+            --label "io.fcos-bcachefs.driver-ref=${{ steps.driver.outputs.ref }}" \
+            .
+          
+          rm -f /tmp/module_signing_key
 
       - name: Smoke test image
         if: ${{ steps.check.outputs.build_needed == 'true' }}
@@ -258,11 +259,11 @@ jobs:
           TAG=$(echo "${{ steps.tags.outputs.tags }}" | head -n1 | xargs)
           # podman does an internal re-exec/unshare for its pause process
           # setup even running as root here — that needs capabilities a
-          # plain `docker run` doesn't grant by default (no CAP_SYS_ADMIN,
+          # plain `podman run` doesn't grant by default (no CAP_SYS_ADMIN,
           # seccomp blocks the clone flags it needs). Without --privileged,
           # `podman info` fails before ever reaching the graphdriver,
           # producing a false "driver not registered" result below.
-          docker run --rm --privileged -e SIGNING_ENABLED="${{ steps.signing.outputs.enabled }}" "$TAG" bash -c '
+          podman run --rm --privileged -e SIGNING_ENABLED="${{ steps.signing.outputs.enabled }}" "$TAG" bash -c '
             set -eux
             KVER=$(rpm -q kernel-core --queryformat "%{VERSION}-%{RELEASE}.%{ARCH}")
             modinfo -k "$KVER" bcachefs
@@ -301,30 +302,14 @@ jobs:
       - name: Push image
         if: ${{ steps.check.outputs.build_needed == 'true' }}
         id: push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          provenance: false
-          tags: ${{ steps.tags.outputs.tags }}
-          build-args: |
-            BASE_IMAGE=${{ steps.base.outputs.pinned }}
-            BUILDER_IMAGE=${{ steps.base.outputs.builder }}
-            BCACHEFS_REF=${{ steps.bcachefs.outputs.ref }}
-            BCACHEFS_DRIVER_REF=${{ steps.driver.outputs.ref }}
-            SIGNING_FINGERPRINT=${{ steps.signing.outputs.fingerprint }}
-            FCOS_MAJOR=${{ steps.base.outputs.fcos_major }}
-          secrets: |
-            "module_signing_key=${{ secrets.MODULE_SIGNING_KEY }}"
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=Fedora CoreOS (${{ matrix.fcos_stream }}) with the bcachefs kernel module and bcachefs-tools
-            org.opencontainers.image.licenses=MIT
-            org.opencontainers.image.version=${{ steps.base.outputs.fcos_version }}
-            io.fcos-bcachefs.base-digest=${{ steps.base.outputs.digest }}
-            io.fcos-bcachefs.bcachefs-ref=${{ steps.bcachefs.outputs.ref }}
-            io.fcos-bcachefs.driver-ref=${{ steps.driver.outputs.ref }}
-          cache-from: type=gha,scope=${{ matrix.fcos_stream }}
+        run: |
+          while IFS= read -r tag; do
+            if [ -n "$tag" ]; then
+              podman push --digestfile=/tmp/digest "$tag"
+            fi
+          done <<< "${{ steps.tags.outputs.tags }}"
+          
+          echo "digest=$(cat /tmp/digest)" >> "$GITHUB_OUTPUT"
 
       - name: Install cosign
         if: ${{ steps.check.outputs.build_needed == 'true' }}
