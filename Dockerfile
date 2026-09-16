@@ -300,4 +300,9 @@ RUN set -eux; \
 
 # Finalize the image for both paths.
 RUN bootc container lint || echo "bootc lint reported issues (non-fatal)"
-RUN ostree container commit
+# FCOS <= 44: wrap layers into an OSTree commit so rpm-ostree can use it.
+# FCOS > 44: bootc natively understands standard OCI layers — no commit needed.
+RUN set -eux; \
+    if [ "$FCOS_MAJOR" -le 44 ]; then \
+        ostree container commit; \
+    fi
