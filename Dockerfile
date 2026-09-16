@@ -228,13 +228,15 @@ RUN mkdir -p /out/rpms && \
         ! -name 'podman-docker-*' \
         -exec cp {} /out/rpms/ \;
 
+ARG FCOS_MAJOR=44
 FROM ${BASE_IMAGE}
 RUN --mount=type=bind,from=tools,source=/root/rpmbuild/RPMS,target=/tools-rpms \
     --mount=type=bind,from=module,source=/out/rpms,target=/kmod-rpms \
-    rpm-ostree install -y \
-        mokutil \
-        /tools-rpms/*/bcachefs-tools-0*.rpm \
-        /kmod-rpms/kmod-bcachefs-*.rpm
+    if [ "$FCOS_MAJOR" -le 44 ]; then \
+        rpm-ostree install -y mokutil /tools-rpms/*/bcachefs-tools-0*.rpm /kmod-rpms/kmod-bcachefs-*.rpm; \
+    else \
+        dnf install -y mokutil /tools-rpms/*/bcachefs-tools-0*.rpm /kmod-rpms/kmod-bcachefs-*.rpm; \
+    fi
 RUN set -eux; \
     KVER=$(rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}'); \
     depmod -a "${KVER}"; \
@@ -281,13 +283,21 @@ COPY certs/MOK.der /etc/pki/fcos-bcachefs/MOK.der
 COPY certs/cosign.pub /etc/pki/containers/fcos-bcachefs.pub
 COPY containers/fcos-bcachefs.yaml /etc/containers/registries.d/fcos-bcachefs.yaml
 COPY containers/policy.json /etc/containers/policy.json
-COPY systemd/10-update-window.conf /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/10-update-window.conf
-
+# FCOS <= 44 (rpm-ostree): layer packages via rpm-ostree, configure updates
+# FCOS > 44 (bootc): dnf installs work directly in the container build,
+#   no rpm-ostreed or zincati — bootc handles updates natively.
+COPY systemd/10-update-window.conf /tmp/10-update-window.conf
 RUN set -eux; \
-    printf '[Daemon]\nAutomaticUpdatePolicy=apply\n' > /etc/rpm-ostreed.conf; \
-    systemctl enable rpm-ostreed-automatic.timer; \
-    systemctl mask zincati.service
+    if [ "$FCOS_MAJOR" -le 44 ]; then \
+        mkdir -p /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d; \
+        cp /tmp/10-update-window.conf /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/10-update-window.conf; \
+        printf '[Daemon]\nAutomaticUpdatePolicy=apply\n' > /etc/rpm-ostreed.conf; \
+        systemctl enable rpm-ostreed-automatic.timer; \
+        systemctl mask zincati.service; \
+    else \
+        rm /tmp/10-update-window.conf; \
+    fi
 
+# Finalize the image for both paths.
 RUN bootc container lint || echo "bootc lint reported issues (non-fatal)"
-
 RUN ostree container commit
