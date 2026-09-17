@@ -67,17 +67,28 @@ RUN set -eux; \
         rm -rf /koji; \
     fi
 
+# dkms needs /lib/modules/<kver>/build; kernel-devel's scriptlet does not
+# always create it when the package is installed from a local file.
 RUN --mount=type=bind,from=tools,source=/root/rpmbuild/RPMS,target=/rpms \
     --mount=type=secret,id=module_signing_key \
     set -eux; \
     KVER=$(cat /kver); \
+    if [ ! -e "/lib/modules/${KVER}/build" ]; then \
+        test -d "/usr/src/kernels/${KVER}"; \
+        mkdir -p "/lib/modules/${KVER}"; \
+        ln -sf "/usr/src/kernels/${KVER}" "/lib/modules/${KVER}/build"; \
+    fi; \
     rpm -i --noscripts --nodeps --nosignature /rpms/noarch/dkms-bcachefs-*.rpm; \
     SRC=$(ls -d /usr/src/bcachefs-*); \
     PACKAGE_NAME=$(sed -n 's/^PACKAGE_NAME="\?\([^"]*\)"\?.*/\1/p' "${SRC}/dkms.conf"); \
     PACKAGE_VERSION=$(sed -n 's/^PACKAGE_VERSION="\?\([^"]*\)"\?.*/\1/p' "${SRC}/dkms.conf"); \
     : "${PACKAGE_NAME:=bcachefs}"; \
     : "${PACKAGE_VERSION:=$(basename "${SRC}" | cut -d- -f2-)}"; \
-    dkms install "${PACKAGE_NAME}/${PACKAGE_VERSION}" -k "${KVER}" --force; \
+    dkms install "${PACKAGE_NAME}/${PACKAGE_VERSION}" -k "${KVER}" --force || { \
+        echo "=== dkms install failed, dumping make.log ==="; \
+        find "/var/lib/dkms/${PACKAGE_NAME}/${PACKAGE_VERSION}" -name 'make.log' -exec cat {} \; ; \
+        exit 1; \
+    }; \
     echo "${PACKAGE_VERSION}" > /bver; \
     mkdir -p /out; \
     KO=$(find "/lib/modules/${KVER}" \( -path '*/extra/*' -o -path '*/updates/*' \) -name 'bcachefs.ko*' | head -n1); \
@@ -132,6 +143,9 @@ RUN --mount=type=bind,from=tools,source=/root/rpmbuild/RPMS,target=/rpms \
     mkdir -p /out/rpms; \
     cp /root/rpmbuild/RPMS/*/kmod-bcachefs-*.rpm /out/rpms/
 
+# Rebuilds Fedora's own podman with the bcachefs graphdriver patched into
+# its vendored containers/storage. The NVR stays identical to stock so
+# podman-family packages from the repos still resolve against it.
 FROM ${BUILDER_IMAGE} AS podman-driver
 ARG BCACHEFS_DRIVER_REF=main
 COPY --from=kinfo /pnvr /karch /
@@ -180,44 +194,46 @@ RUN set -eux; \
     }; \
     cd /root/rpmbuild && rpmbuild -bb --noprep SPECS/podman.spec; \
     mkdir -p /out/rpms; \
-    find /root/rpmbuild/RPMS -name '*.rpm' \
-        ! -name '*-debuginfo-*' ! -name '*-debugsource-*' \
-        ! -name 'podman-docker-*' \
-        -exec cp {} /out/rpms/ \;
+    cp /root/rpmbuild/RPMS/*/podman-[0-9]*.rpm /out/rpms/; \
+    ls -la /out/rpms
 
-# Final Base Target (Reduced to 2 image layers)
 FROM ${BASE_IMAGE}
 ARG FCOS_MAJOR=44
 
-# 1. Batch-copy config/cert files in a single layer
 COPY certs/MOK.der /etc/pki/fcos-bcachefs/MOK.der
 COPY certs/cosign.pub /etc/pki/containers/fcos-bcachefs.pub
 COPY containers/fcos-bcachefs.yaml /etc/containers/registries.d/fcos-bcachefs.yaml
 COPY containers/policy.json /etc/containers/policy.json
-COPY systemd/10-update-window.conf /tmp/10-update-window.conf
+COPY systemd/10-update-window.conf /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/10-update-window.conf
 
-# 2. Combine all installation, package swapping, and FCOS/bootc tasks into 1 RUN layer
 RUN --mount=type=bind,from=tools,source=/root/rpmbuild/RPMS,target=/tools-rpms \
     --mount=type=bind,from=module,source=/out/rpms,target=/kmod-rpms \
     --mount=type=bind,from=podman-driver,source=/out/rpms,target=/podman-rpms \
     set -eux; \
+    test -n "$FCOS_MAJOR"; \
+    case "$FCOS_MAJOR" in ''|*[!0-9]*) echo "FATAL: FCOS_MAJOR must be numeric, got '$FCOS_MAJOR'"; exit 1;; esac; \
     if [ "$FCOS_MAJOR" -le 44 ]; then \
         rpm-ostree install -y mokutil /tools-rpms/*/bcachefs-tools-0*.rpm /kmod-rpms/kmod-bcachefs-*.rpm; \
     else \
         dnf install -y mokutil /tools-rpms/*/bcachefs-tools-0*.rpm /kmod-rpms/kmod-bcachefs-*.rpm; \
+        dnf clean all; \
+        rm -rf /var/cache/dnf /var/cache/libdnf5 /var/log/dnf* /var/log/hawkey*; \
     fi; \
     KVER=$(rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}'); \
     depmod -a "${KVER}"; \
     modinfo -k "${KVER}" bcachefs; \
     rpm -Uvh --replacepkgs --nosignature /podman-rpms/podman-[0-9]*.rpm; \
     if [ "$FCOS_MAJOR" -le 44 ]; then \
-        mkdir -p /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d; \
-        cp /tmp/10-update-window.conf /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/10-update-window.conf; \
         printf '[Daemon]\nAutomaticUpdatePolicy=apply\n' > /etc/rpm-ostreed.conf; \
         systemctl enable rpm-ostreed-automatic.timer; \
-        systemctl mask zincati.service; \
+    else \
+        rm -rf /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d; \
+        mkdir -p /usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d; \
+        printf '[Timer]\nOnBootSec=\nOnUnitInactiveSec=\nOnCalendar=*-*-* 04:00:00\nRandomizedDelaySec=30m\nPersistent=true\n' \
+            > /usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d/10-update-window.conf; \
+        systemctl enable bootc-fetch-apply-updates.timer; \
     fi; \
-    rm -f /tmp/10-update-window.conf; \
+    systemctl mask zincati.service 2>/dev/null || true; \
     bootc container lint || echo "bootc lint reported issues (non-fatal)"; \
     if [ "$FCOS_MAJOR" -le 44 ]; then \
         ostree container commit; \
