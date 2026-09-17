@@ -74,6 +74,13 @@ jobs:
           fi
 
           FREL="${VERSION%%.*}"
+          case "$FREL" in
+            ''|*[!0-9]*)
+              echo "FATAL: could not parse a numeric Fedora major from version '${VERSION}'"
+              exit 1
+              ;;
+          esac
+
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "pinned=${PINNED}" >> "$GITHUB_OUTPUT"
           echo "fcos_version=${VERSION}" >> "$GITHUB_OUTPUT"
@@ -181,7 +188,6 @@ jobs:
         run: |
           STREAM="${{ matrix.fcos_stream }}"
           REF="${{ steps.bcachefs.outputs.ref }}"
-          SHORT_REF="${{ steps.bcachefs.outputs.short_ref }}"
           FCOS="${{ steps.base.outputs.fcos_version }}"
 
           if [ "${{ steps.mode.outputs.isolated }}" = "true" ]; then
@@ -221,10 +227,11 @@ jobs:
         env:
           MODULE_SIGNING_KEY: ${{ secrets.MODULE_SIGNING_KEY }}
         run: |
-          SECRET_ARGS=""
+          SECRET_ARGS=()
           if [ -n "$MODULE_SIGNING_KEY" ]; then
-            echo "$MODULE_SIGNING_KEY" > /tmp/module_signing_key
-            SECRET_ARGS="--secret id=module_signing_key,src=/tmp/module_signing_key"
+            install -m 0600 /dev/null /tmp/module_signing_key
+            printf '%s' "$MODULE_SIGNING_KEY" > /tmp/module_signing_key
+            SECRET_ARGS=(--secret "id=module_signing_key,src=/tmp/module_signing_key")
           fi
 
           TAG_ARGS=()
@@ -241,7 +248,7 @@ jobs:
             --build-arg BCACHEFS_DRIVER_REF="${{ steps.driver.outputs.ref }}" \
             --build-arg SIGNING_FINGERPRINT="${{ steps.signing.outputs.fingerprint }}" \
             --build-arg FCOS_MAJOR="${{ steps.base.outputs.fcos_major }}" \
-            $SECRET_ARGS \
+            "${SECRET_ARGS[@]}" \
             --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --label "org.opencontainers.image.description=Fedora CoreOS (${{ matrix.fcos_stream }}) with the bcachefs kernel module and bcachefs-tools" \
             --label "org.opencontainers.image.licenses=MIT" \
@@ -250,56 +257,58 @@ jobs:
             --label "io.fcos-bcachefs.bcachefs-ref=${{ steps.bcachefs.outputs.ref }}" \
             --label "io.fcos-bcachefs.driver-ref=${{ steps.driver.outputs.ref }}" \
             .
-          
-          rm -f /tmp/module_signing_key
+
+      - name: Remove signing key from runner
+        if: ${{ always() }}
+        run: rm -f /tmp/module_signing_key
 
       - name: Smoke test image
         if: ${{ steps.check.outputs.build_needed == 'true' }}
         run: |
           TAG=$(echo "${{ steps.tags.outputs.tags }}" | head -n1 | xargs)
-          podman run --rm --privileged -e SIGNING_ENABLED="${{ steps.signing.outputs.enabled }}" "$TAG" bash -c '
+          podman run --rm --privileged \
+            -e SIGNING_ENABLED="${{ steps.signing.outputs.enabled }}" \
+            -e FCOS_MAJOR="${{ steps.base.outputs.fcos_major }}" \
+            "$TAG" bash -c '
             set -eux
+
             KVER=$(rpm -q kernel-core --queryformat "%{VERSION}-%{RELEASE}.%{ARCH}")
             modinfo -k "$KVER" bcachefs
             VERMAGIC=$(modinfo -k "$KVER" -F vermagic bcachefs)
             case "$VERMAGIC" in "$KVER "*) ;; *) echo "vermagic mismatch: $VERMAGIC != $KVER"; exit 1;; esac
-            rpm -q bcachefs-tools
+
+            rpm -q bcachefs-tools kmod-bcachefs podman
             bcachefs version
-            rpm -q kmod-bcachefs
-            rpm -q podman
             test -f /usr/lib/modules-load.d/bcachefs.conf
-            
-            # FCOS <= 44 (rpm-ostree) vs > 44 (bootc/next): check for rpm-ostree binary to disambiguate
-            if command -v rpm-ostree >/dev/null 2>&1; then
-              # Only run zincati check if the symlink actually exists
-              ZINCATI_LINK=$(readlink /etc/systemd/system/zincati.service 2>/dev/null || true)
-              if [ -n "$ZINCATI_LINK" ]; then
-                test "$ZINCATI_LINK" = "/dev/null"
-              fi
-              
-              # Only check rpm-ostreed timer and config if they are present in the image
-              if [ -e /etc/systemd/system/timers.target.wants/rpm-ostreed-automatic.timer ]; then
-                test -e /etc/systemd/system/timers.target.wants/rpm-ostreed-automatic.timer
-              fi
-              if [ -f /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/10-update-window.conf ]; then
-                test -f /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/10-update-window.conf
-              fi
-              if [ -f /etc/rpm-ostreed.conf ]; then
-                grep -q "AutomaticUpdatePolicy=apply" /etc/rpm-ostreed.conf || true
-              fi
+
+            # Update mechanism differs by generation: rpm-ostree on <= 44,
+            # bootc on newer. Assert the right one is actually configured
+            # rather than skipping when absent.
+            if [ "$FCOS_MAJOR" -le 44 ]; then
+              grep -q "AutomaticUpdatePolicy=apply" /etc/rpm-ostreed.conf
+              test -e /etc/systemd/system/timers.target.wants/rpm-ostreed-automatic.timer
+              test -f /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/10-update-window.conf
+            else
+              test -e /etc/systemd/system/timers.target.wants/bootc-fetch-apply-updates.timer
+              test -f /usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d/10-update-window.conf
+              test ! -e /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d
             fi
-            
+
             if [ "$SIGNING_ENABLED" = "true" ]; then
               SIGNER=$(modinfo -k "$KVER" -F signer bcachefs)
               echo "module signer: ${SIGNER}"
               test -n "$SIGNER"
               test -f /etc/pki/fcos-bcachefs/MOK.der
             fi
+
+            # A registered driver reaches Init() and rejects the non-bcachefs
+            # path; an unregistered one reports "driver not supported".
             OUT=$(podman --storage-driver bcachefs --root /tmp/pmtest info 2>&1 || true)
             echo "$OUT"
             echo "$OUT" | grep -qi "not on a bcachefs filesystem" || {
               echo "bcachefs storage driver not registered in podman"; exit 1;
             }
+
             if [ -f /etc/containers/storage.conf ]; then
               if grep -q "^driver = \"bcachefs\"" /etc/containers/storage.conf; then
                 echo "storage.conf defaults to bcachefs — must ship inert"; exit 1;
@@ -316,7 +325,8 @@ jobs:
               podman push --digestfile=/tmp/digest "$tag"
             fi
           done <<< "${{ steps.tags.outputs.tags }}"
-          
+
+          test -s /tmp/digest
           echo "digest=$(cat /tmp/digest)" >> "$GITHUB_OUTPUT"
 
       - name: Install cosign
@@ -326,13 +336,8 @@ jobs:
       - name: Sign image
         if: ${{ steps.check.outputs.build_needed == 'true' }}
         run: |
-          # Authenticate cosign with GHCR
           echo "${{ secrets.GITHUB_TOKEN }}" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
-          
-          # Sign the image
           cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
-          
-          # Optionally sign with a private key if provided
           if [ -n "$COSIGN_PRIVATE_KEY" ]; then
             cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${IMAGE}@${{ steps.push.outputs.digest }}"
           fi
