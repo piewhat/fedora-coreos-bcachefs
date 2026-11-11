@@ -44,6 +44,9 @@ jobs:
           - stable
           - testing
           - next
+        variant:
+          - stock
+          - driver
 
     steps:
       - name: Checkout repository
@@ -117,6 +120,19 @@ jobs:
           : "${REF:=main}"
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve variant
+        id: variant
+        run: |
+          if [ "${{ matrix.variant }}" = "driver" ]; then
+            echo "suffix=-driver" >> "$GITHUB_OUTPUT"
+            echo "podman_variant=driver" >> "$GITHUB_OUTPUT"
+            echo "driver_label=${{ steps.driver.outputs.ref }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "suffix=" >> "$GITHUB_OUTPUT"
+            echo "podman_variant=stock" >> "$GITHUB_OUTPUT"
+            echo "driver_label=none" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Resolve build mode
         id: mode
         run: |
@@ -133,7 +149,7 @@ jobs:
             SAFE_BRANCH=$(printf '%s' "$BRANCH" | tr -c 'a-zA-Z0-9._-' '-' | sed 's/^-*//; s/-*$//')
             LABEL="branch-${SAFE_BRANCH}"
             echo "isolated: running from non-main branch ($BRANCH)"
-          elif [ -n "${{ inputs.driver_ref }}" ]; then
+          elif [ -n "${{ inputs.driver_ref }}" ] && [ "${{ matrix.variant }}" = "driver" ]; then
             ISOLATED=true
             SAFE_DRIVER=$(printf '%s' "${{ inputs.driver_ref }}" | cut -c1-12 | tr -c 'a-zA-Z0-9._-' '-' | sed 's/^-*//; s/-*$//')
             LABEL="driver-${SAFE_DRIVER}"
@@ -162,7 +178,7 @@ jobs:
           for i in 1 2 3; do
             CURRENT=$(skopeo inspect \
               --format '{{index .Labels "io.fcos-bcachefs.base-digest"}},{{index .Labels "io.fcos-bcachefs.bcachefs-ref"}},{{index .Labels "io.fcos-bcachefs.driver-ref"}}' \
-              "docker://${IMAGE}:${{ matrix.fcos_stream }}" 2>&1) && break
+              "docker://${IMAGE}:${{ matrix.fcos_stream }}${{ steps.variant.outputs.suffix }}" 2>&1) && break
             if echo "$CURRENT" | grep -q "manifest unknown"; then
               CURRENT="none"
               break
@@ -171,7 +187,7 @@ jobs:
             CURRENT="none"
             sleep $((i * 15))
           done
-          WANTED="${{ steps.base.outputs.digest }},${{ steps.bcachefs.outputs.ref }},${{ steps.driver.outputs.ref }}"
+          WANTED="${{ steps.base.outputs.digest }},${{ steps.bcachefs.outputs.ref }},${{ steps.variant.outputs.driver_label }}"
 
           echo "current: ${CURRENT}"
           echo "wanted:  ${WANTED}"
@@ -187,16 +203,17 @@ jobs:
         if: ${{ steps.check.outputs.build_needed == 'true' }}
         run: |
           STREAM="${{ matrix.fcos_stream }}"
+          SUFFIX="${{ steps.variant.outputs.suffix }}"
           REF="${{ steps.bcachefs.outputs.ref }}"
           FCOS="${{ steps.base.outputs.fcos_version }}"
 
           if [ "${{ steps.mode.outputs.isolated }}" = "true" ]; then
-            TAGS="${IMAGE}:git-${{ steps.mode.outputs.label }}-${FCOS}-${STREAM}"
+            TAGS="${IMAGE}:git-${{ steps.mode.outputs.label }}-${FCOS}-${STREAM}${SUFFIX}"
           else
             TAGS=$(printf '%s\n%s\n%s' \
-              "${IMAGE}:${STREAM}" \
-              "${IMAGE}:${REF}-${STREAM}" \
-              "${IMAGE}:${REF}-${FCOS}-${STREAM}")
+              "${IMAGE}:${STREAM}${SUFFIX}" \
+              "${IMAGE}:${REF}-${STREAM}${SUFFIX}" \
+              "${IMAGE}:${REF}-${FCOS}-${STREAM}${SUFFIX}")
           fi
 
           {
@@ -248,6 +265,7 @@ jobs:
             --build-arg BCACHEFS_DRIVER_REF="${{ steps.driver.outputs.ref }}" \
             --build-arg SIGNING_FINGERPRINT="${{ steps.signing.outputs.fingerprint }}" \
             --build-arg FCOS_MAJOR="${{ steps.base.outputs.fcos_major }}" \
+            --build-arg PODMAN_VARIANT="${{ steps.variant.outputs.podman_variant }}" \
             "${SECRET_ARGS[@]}" \
             --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --label "org.opencontainers.image.description=Fedora CoreOS (${{ matrix.fcos_stream }}) with the bcachefs kernel module and bcachefs-tools" \
@@ -255,7 +273,8 @@ jobs:
             --label "org.opencontainers.image.version=${{ steps.base.outputs.fcos_version }}" \
             --label "io.fcos-bcachefs.base-digest=${{ steps.base.outputs.digest }}" \
             --label "io.fcos-bcachefs.bcachefs-ref=${{ steps.bcachefs.outputs.ref }}" \
-            --label "io.fcos-bcachefs.driver-ref=${{ steps.driver.outputs.ref }}" \
+            --label "io.fcos-bcachefs.driver-ref=${{ steps.variant.outputs.driver_label }}" \
+            --label "io.fcos-bcachefs.variant=${{ steps.variant.outputs.podman_variant }}" \
             .
 
       - name: Remove signing key from runner
@@ -269,6 +288,7 @@ jobs:
           podman run --rm --privileged \
             -e SIGNING_ENABLED="${{ steps.signing.outputs.enabled }}" \
             -e FCOS_MAJOR="${{ steps.base.outputs.fcos_major }}" \
+            -e PODMAN_VARIANT="${{ steps.variant.outputs.podman_variant }}" \
             "$TAG" bash -c '
             set -eux
 
@@ -305,9 +325,13 @@ jobs:
             # path; an unregistered one reports "driver not supported".
             OUT=$(podman --storage-driver bcachefs --root /tmp/pmtest info 2>&1 || true)
             echo "$OUT"
-            echo "$OUT" | grep -qi "not on a bcachefs filesystem" || {
-              echo "bcachefs storage driver not registered in podman"; exit 1;
-            }
+            if [ "$PODMAN_VARIANT" = "driver" ]; then
+              echo "$OUT" | grep -qi "not on a bcachefs filesystem" || {
+                echo "bcachefs storage driver not registered in podman"; exit 1;
+              }
+            elif echo "$OUT" | grep -qi "not on a bcachefs filesystem"; then
+              echo "stock image registers the bcachefs storage driver"; exit 1
+            fi
 
             if [ -f /etc/containers/storage.conf ]; then
               if grep -q "^driver = \"bcachefs\"" /etc/containers/storage.conf; then

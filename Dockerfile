@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
 ARG BASE_IMAGE=quay.io/fedora/fedora-coreos:stable
 ARG BUILDER_IMAGE=quay.io/fedora/fedora:latest
+ARG PODMAN_VARIANT=stock
 
 FROM ${BASE_IMAGE} AS kinfo
 RUN rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}' > /kver && \
@@ -197,6 +198,15 @@ RUN set -eux; \
     cp /root/rpmbuild/RPMS/*/podman-[0-9]*.rpm /out/rpms/; \
     ls -la /out/rpms
 
+# The final image installs whatever podman RPMs the selected variant
+# provides: none for "stock", the patched build for "driver". Selecting
+# the stage by name lets the builder skip the podman rebuild entirely
+# for stock images.
+FROM ${BUILDER_IMAGE} AS podman-stock
+RUN mkdir -p /out/rpms
+
+FROM podman-${PODMAN_VARIANT} AS podman-rpms
+
 FROM ${BASE_IMAGE}
 ARG FCOS_MAJOR=44
 
@@ -208,7 +218,7 @@ COPY systemd/10-update-window.conf /usr/lib/systemd/system/rpm-ostreed-automatic
 
 RUN --mount=type=bind,from=tools,source=/root/rpmbuild/RPMS,target=/tools-rpms \
     --mount=type=bind,from=module,source=/out/rpms,target=/kmod-rpms \
-    --mount=type=bind,from=podman-driver,source=/out/rpms,target=/podman-rpms \
+    --mount=type=bind,from=podman-rpms,source=/out/rpms,target=/podman-rpms \
     set -eux; \
     test -n "$FCOS_MAJOR"; \
     case "$FCOS_MAJOR" in ''|*[!0-9]*) echo "FATAL: FCOS_MAJOR must be numeric, got '$FCOS_MAJOR'"; exit 1;; esac; \
@@ -222,7 +232,9 @@ RUN --mount=type=bind,from=tools,source=/root/rpmbuild/RPMS,target=/tools-rpms \
     KVER=$(rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}'); \
     depmod -a "${KVER}"; \
     modinfo -k "${KVER}" bcachefs; \
-    rpm -Uvh --replacepkgs --nosignature /podman-rpms/podman-[0-9]*.rpm; \
+    if ls /podman-rpms/podman-[0-9]*.rpm >/dev/null 2>&1; then \
+        rpm -Uvh --replacepkgs --nosignature /podman-rpms/podman-[0-9]*.rpm; \
+    fi; \
     if [ "$FCOS_MAJOR" -le 44 ]; then \
         printf '[Daemon]\nAutomaticUpdatePolicy=apply\n' > /etc/rpm-ostreed.conf; \
         systemctl enable rpm-ostreed-automatic.timer; \
