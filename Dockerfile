@@ -14,7 +14,10 @@ ARG BCACHEFS_REF
 ENV RPM_TOPDIR=/root/rpmbuild \
     RPM_BUILD_NOSOURCEDEBUG=1
 WORKDIR /build
-RUN set -eux; \
+# make -j interleaves output from many jobs, so on failure the real error is
+# thousands of lines above the last line printed. Keep a log and print the
+# error lines when the build fails.
+RUN set -eux; set -o pipefail; \
     dnf install -y \
         rpm-build \
         jq \
@@ -44,7 +47,13 @@ RUN set -eux; \
     git clone https://github.com/koverstreet/bcachefs-tools.git; \
     cd bcachefs-tools; \
     git checkout "$BCACHEFS_REF"; \
-    make rpm -j"$(nproc)"
+    make rpm -j"$(nproc)" 2>&1 | tee /tmp/make-rpm.log || { \
+        echo "=== make rpm failed: error lines ==="; \
+        grep -nE 'error(\[|:)|\*\*\*|Error [0-9]|Killed|fatal|panicked|undefined reference' /tmp/make-rpm.log | head -40 || true; \
+        echo "=== last 60 lines ==="; \
+        tail -n 60 /tmp/make-rpm.log; \
+        exit 1; \
+    }
 
 FROM ${BUILDER_IMAGE} AS module
 COPY --from=kinfo /kver /kvr /karch /
