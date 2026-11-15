@@ -11,6 +11,13 @@ RUN rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}' > /kver && 
 
 FROM ${BUILDER_IMAGE} AS tools
 ARG BCACHEFS_REF
+# bcachefs-tools picks code paths with LINUX_VERSION_CODE from the host's
+# <linux/version.h>; the repo has no shim of its own. Paths guarded for kernel
+# >= 7.3 (e.g. bi_iter.bi_offset in fs/data/read.c) use fields that its
+# userspace bvec shim does not define, so Fedora's kernel-headers reaching 7.3
+# broke the userspace build. Keep the builder on older headers. Set
+# TOOLS_KERNEL_HEADERS=kernel-headers to drop the pin once upstream handles 7.3.
+ARG TOOLS_KERNEL_HEADERS="kernel-headers < 7.3"
 ENV RPM_TOPDIR=/root/rpmbuild \
     RPM_BUILD_NOSOURCEDEBUG=1
 WORKDIR /build
@@ -18,7 +25,9 @@ WORKDIR /build
 # thousands of lines above the last line printed. Keep a log and print the
 # error lines when the build fails.
 RUN set -eux; set -o pipefail; \
+    dnf install -y fedora-repos-archive; \
     dnf install -y \
+        "$TOOLS_KERNEL_HEADERS" \
         rpm-build \
         jq \
         'pkgconfig(udev)' \
@@ -43,6 +52,11 @@ RUN set -eux; set -o pipefail; \
         cargo \
         libattr-devel \
         libunwind-devel; \
+    HDR=$(printf '#include <linux/version.h>\nLINUX_VERSION_CODE\n' | gcc -E -P -x c - | tail -n1); \
+    echo "tools builder kernel headers: $((HDR>>16)).$(((HDR>>8)&255)).$((HDR&255))"; \
+    if [ "$TOOLS_KERNEL_HEADERS" != "kernel-headers" ] && [ "$HDR" -ge 459520 ]; then \
+        echo "FATAL: kernel headers are 7.3 or newer despite the pin ($TOOLS_KERNEL_HEADERS)"; exit 1; \
+    fi; \
     mkdir -p ${RPM_TOPDIR}/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}; \
     git clone https://github.com/koverstreet/bcachefs-tools.git; \
     cd bcachefs-tools; \
