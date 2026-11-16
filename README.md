@@ -93,9 +93,11 @@ cosign verify ghcr.io/piewhat/fedora-coreos-bcachefs:stable \
 
 Images tagged `-driver` ship podman rebuilt with the
 [bcachefs-storage-driver](https://github.com/ticpu/bcachefs-storage-driver)
-patched in; the plain stream tags ship Fedora's podman unchanged. The driver
-is inert until you select it — `storage.conf` still defaults to overlay. To
-opt in, rebase to a `-driver` tag:
+patched in; the plain stream tags ship Fedora's podman unchanged. A `-driver`
+image is the stock image of the same build with only podman replaced, so it
+always matches it and rebasing between the two downloads just that layer. The
+driver is inert until you select it — `storage.conf` still defaults to overlay.
+To opt in, rebase to a `-driver` tag:
 
 ```
 sudo rpm-ostree rebase --reboot \

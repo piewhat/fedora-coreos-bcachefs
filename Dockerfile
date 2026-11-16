@@ -1,13 +1,11 @@
 # syntax=docker/dockerfile:1.7
 ARG BASE_IMAGE=quay.io/fedora/fedora-coreos:stable
 ARG BUILDER_IMAGE=quay.io/fedora/fedora:latest
-ARG PODMAN_VARIANT=stock
 
 FROM ${BASE_IMAGE} AS kinfo
 RUN rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}' > /kver && \
     rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}' > /kvr && \
-    rpm -q kernel-core --queryformat '%{ARCH}' > /karch && \
-    rpm -q podman --queryformat '%{VERSION}-%{RELEASE}' > /pnvr
+    rpm -q kernel-core --queryformat '%{ARCH}' > /karch
 
 FROM ${BUILDER_IMAGE} AS tools
 ARG BCACHEFS_REF
@@ -167,69 +165,6 @@ RUN --mount=type=bind,from=tools,source=/root/rpmbuild/RPMS,target=/rpms \
     mkdir -p /out/rpms; \
     cp /root/rpmbuild/RPMS/*/kmod-bcachefs-*.rpm /out/rpms/
 
-# Rebuilds Fedora's own podman with the bcachefs graphdriver patched into
-# its vendored containers/storage. The NVR stays identical to stock so
-# podman-family packages from the repos still resolve against it.
-FROM ${BUILDER_IMAGE} AS podman-driver
-ARG BCACHEFS_DRIVER_REF=main
-COPY --from=kinfo /pnvr /karch /
-WORKDIR /build
-RUN set -eux; \
-    dnf install -y 'dnf-command(download)' rpmdevtools rpm-build git golang jq koji; \
-    rpmdev-setuptree; \
-    git clone https://github.com/ticpu/bcachefs-storage-driver.git; \
-    cd bcachefs-storage-driver; \
-    git checkout "$BCACHEFS_DRIVER_REF"; \
-    PNVR=$(cat /pnvr); \
-    cd /build; \
-    dnf download --source --enablerepo='*source*' "podman-${PNVR}" -y --downloaddir /build || \
-    koji download-build --noprogress --arch src "podman-${PNVR}"; \
-    rpm -i --nosignature /build/podman-*.src.rpm; \
-    dnf builddep -y /root/rpmbuild/SPECS/podman.spec; \
-    cd /root/rpmbuild && rpmbuild -bp SPECS/podman.spec; \
-    SRC_DIR=$(find /root/rpmbuild/BUILD -maxdepth 1 -type d -name 'podman-*' | head -n1); \
-    test -n "$SRC_DIR"; \
-    STORAGE_DIR=$(find "$SRC_DIR" -maxdepth 5 -type d -path '*/vendor/go.podman.io/storage' 2>/dev/null | head -n1); \
-    MODULE="go.podman.io/storage"; \
-    if [ -z "$STORAGE_DIR" ]; then \
-        STORAGE_DIR=$(find "$SRC_DIR" -maxdepth 5 -type d -path '*/vendor/github.com/containers/storage' 2>/dev/null | head -n1); \
-        MODULE="github.com/containers/storage"; \
-    fi; \
-    test -n "$STORAGE_DIR"; \
-    MODULES_TXT=$(echo "$STORAGE_DIR" | sed -E 's#(.*/vendor)/.*#\1/modules.txt#'); \
-    bash /build/bcachefs-storage-driver/packaging/apply-driver.sh \
-        --module "$MODULE" \
-        "$STORAGE_DIR" \
-        /build/bcachefs-storage-driver/driver; \
-    PKG="${MODULE}/drivers/bcachefs"; \
-    test -f "$MODULES_TXT"; \
-    if ! grep -qxF "$PKG" "$MODULES_TXT"; then \
-        awk -v modhdr="# ${MODULE} " -v pkg="$PKG" ' \
-            { print } \
-            index($0, modhdr) == 1 { inblock=1; next } \
-            /^# / && index($0, modhdr) != 1 { inblock=0 } \
-            inblock && index($0, "## explicit") == 1 && !done { print pkg; done=1 } \
-        ' "$MODULES_TXT" > "$MODULES_TXT.new"; \
-        mv "$MODULES_TXT.new" "$MODULES_TXT"; \
-    fi; \
-    grep -qxF "$PKG" "$MODULES_TXT" || { \
-        echo "FATAL: failed to register $PKG in $MODULES_TXT"; \
-        exit 1; \
-    }; \
-    cd /root/rpmbuild && rpmbuild -bb --noprep SPECS/podman.spec; \
-    mkdir -p /out/rpms; \
-    cp /root/rpmbuild/RPMS/*/podman-[0-9]*.rpm /out/rpms/; \
-    ls -la /out/rpms
-
-# The final image installs whatever podman RPMs the selected variant
-# provides: none for "stock", the patched build for "driver". Selecting
-# the stage by name lets the builder skip the podman rebuild entirely
-# for stock images.
-FROM ${BUILDER_IMAGE} AS podman-stock
-RUN mkdir -p /out/rpms
-
-FROM podman-${PODMAN_VARIANT} AS podman-rpms
-
 FROM ${BASE_IMAGE}
 ARG FCOS_MAJOR=44
 
@@ -241,7 +176,6 @@ COPY systemd/10-update-window.conf /usr/lib/systemd/system/rpm-ostreed-automatic
 
 RUN --mount=type=bind,from=tools,source=/root/rpmbuild/RPMS,target=/tools-rpms \
     --mount=type=bind,from=module,source=/out/rpms,target=/kmod-rpms \
-    --mount=type=bind,from=podman-rpms,source=/out/rpms,target=/podman-rpms \
     set -eux; \
     test -n "$FCOS_MAJOR"; \
     case "$FCOS_MAJOR" in ''|*[!0-9]*) echo "FATAL: FCOS_MAJOR must be numeric, got '$FCOS_MAJOR'"; exit 1;; esac; \
@@ -255,9 +189,6 @@ RUN --mount=type=bind,from=tools,source=/root/rpmbuild/RPMS,target=/tools-rpms \
     KVER=$(rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}'); \
     depmod -a "${KVER}"; \
     modinfo -k "${KVER}" bcachefs; \
-    if ls /podman-rpms/podman-[0-9]*.rpm >/dev/null 2>&1; then \
-        rpm -Uvh --replacepkgs --nosignature /podman-rpms/podman-[0-9]*.rpm; \
-    fi; \
     if [ "$FCOS_MAJOR" -le 44 ]; then \
         printf '[Daemon]\nAutomaticUpdatePolicy=apply\n' > /etc/rpm-ostreed.conf; \
         systemctl enable rpm-ostreed-automatic.timer; \
